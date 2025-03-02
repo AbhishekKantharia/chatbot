@@ -32,9 +32,8 @@ llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
 # -------------------- RAG: Load & Process Documents --------------------
 
-# Load documents
-loader = TextLoader("knowledge_base.txt")  # Custom knowledge source
-documents = loader.load()
+# loader = TextLoader("knowledge_base.txt")  
+# documents = loader.load()
 
 # Split documents into chunks
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
