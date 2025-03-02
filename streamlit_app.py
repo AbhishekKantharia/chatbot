@@ -75,10 +75,7 @@ if prompt := st.chat_input("Ask me anything..."):
         def process_input(input_text):
             return retrieval_chain.invoke(input_text)
 
-        rag_pipeline = (
-            RunnableLambda(process_input)  # Process input using RAG
-            | StrOutputParser()  # Ensure output is a clean string
-        )
+        rag_pipeline = RunnableLambda(process_input)
 
         # Stream response
         with st.chat_message("assistant"):
