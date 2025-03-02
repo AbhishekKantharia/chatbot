@@ -3,7 +3,7 @@ import streamlit as st
 import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.vectorstores import FAISS
-from langchain.embeddings import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
