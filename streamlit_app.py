@@ -1,56 +1,107 @@
 import streamlit as st
-from openai import OpenAI
+import google.generativeai as genai
+import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.schema import HumanMessage, AIMessage
+from langchain.vectorstores import FAISS
+from langchain.embeddings import GoogleGenerativeAIEmbeddings
+from langchain.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from langchain.pydantic_v1 import BaseModel
+from langchain.schema.runnable import RunnableLambda
+from langchain.schema.output_parser import StrOutputParser
 
-# Show title and description.
-st.title("💬 Chatbot")
-st.write(
-    "This is a simple chatbot that uses OpenAI's GPT-3.5 model to generate responses. "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
-    "You can also learn how to build this app step by step by [following our tutorial](https://docs.streamlit.io/develop/tutorials/llms/build-conversational-apps)."
+# Set up Streamlit app
+st.set_page_config(page_title="AI Chatbot with RAG", page_icon="🤖", layout="wide")
+st.title("🤖 AI Chatbot with Gemini 1.5, RAG & LangChain")
+
+# Fetch API key from environment variables
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+
+if not GOOGLE_API_KEY:
+    st.error("Google AI API key not found! Set it as an environment variable.")
+    st.stop()
+
+# Configure Google Gemini API
+genai.configure(api_key=GOOGLE_API_KEY)
+
+# Initialize latest Gemini AI model
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+
+# -------------------- RAG: Load & Process Documents --------------------
+
+# Load documents
+loader = TextLoader("knowledge_base.txt")  # Custom knowledge source
+documents = loader.load()
+
+# Split documents into chunks
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+docs = text_splitter.split_documents(documents)
+
+# Create embeddings & vector store
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+vector_store = FAISS.from_documents(docs, embeddings)
+
+# Initialize retriever
+retriever = vector_store.as_retriever()
+
+# -------------------- Memory & Conversational RAG Chain --------------------
+
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+retrieval_chain = ConversationalRetrievalChain.from_llm(
+    llm=llm, retriever=retriever, memory=memory
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+# -------------------- AI Model Schema with Pydantic --------------------
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+class UserQuery(BaseModel):
+    question: str
 
-    # Create a session state variable to store the chat messages. This ensures that the
-    # messages persist across reruns.
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+class AIResponse(BaseModel):
+    answer: str
 
-    # Display the existing chat messages via `st.chat_message`.
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+# -------------------- Streamlit Chat UI --------------------
 
-    # Create a chat input field to allow the user to enter a message. This will display
-    # automatically at the bottom of the page.
-    if prompt := st.chat_input("What is up?"):
+# Initialize session state for chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-        # Store and display the current prompt.
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# Display chat history
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-        # Generate a response using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": m["role"], "content": m["content"]}
-                for m in st.session_state.messages
-            ],
-            stream=True,
-        )
+# Chat input
+if prompt := st.chat_input("Ask me anything..."):
 
-        # Stream the response to the chat using `st.write_stream`, then store it in 
-        # session state.
-        with st.chat_message("assistant"):
-            response = st.write_stream(stream)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+    # Store user input
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Define a Runnable pipeline with RAG
+    def process_input(input_text):
+        structured_input = UserQuery(question=input_text)
+        return retrieval_chain.invoke(structured_input.question)
+
+    # Create a Runnable object
+    rag_pipeline = (
+        RunnableLambda(process_input)  # Run the RAG pipeline
+        | StrOutputParser()  # Extract response as a string
+    )
+
+    # Stream response in real-time
+    with st.chat_message("assistant"):
+        response_container = st.empty()
+        response_text = ""
+
+        for chunk in rag_pipeline.stream(prompt):
+            response_text += chunk
+            response_container.markdown(response_text)  # Update progressively
+
+        # Store AI response
+        ai_response = AIResponse(answer=response_text)
+        st.session_state.messages.append({"role": "assistant", "content": ai_response.answer})
