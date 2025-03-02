@@ -2,5 +2,6 @@ streamlit
 google-generativeai
 langchain
 langchain-google-genai
+langchain-community
 pydantic
 faiss-cpu
