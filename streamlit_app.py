@@ -85,9 +85,19 @@ if prompt := st.chat_input("Ask me anything..."):
             response_container = st.empty()
             response_text = ""
 
+        with st.chat_message("assistant"):
+            response_container = st.empty()
+            response_text = ""
+
             for chunk in rag_pipeline.stream(prompt):
-                response_text += chunk
-                response_container.markdown(response_text)
+                if isinstance(chunk, str):
+                    response_text += chunk  # Append plain text
+                elif hasattr(chunk, "text"):  
+                    response_text += chunk.text  # Extract text from structured objects
+                elif hasattr(chunk, "content"):  
+                    response_text += chunk.content  # Alternative extraction
+        
+            response_container.markdown(response_text)  # Update UI dynamically
 
     else:
         # No context, use Gemini AI directly
