@@ -1,2 +1,6 @@
 streamlit
-openai
+google-generativeai
+langchain
+langchain-google-genai
+pydantic
+faiss-cpu
