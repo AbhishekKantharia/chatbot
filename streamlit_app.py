@@ -1,160 +1,162 @@
 import os
 import streamlit as st
-import random
-import time
-import pdfkit
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from langchain_community.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from PyPDF2 import PdfReader
+import docx2txt
+import sqlite3
 import socket
-from textstat import flesch_reading_ease
 
-# ========================= CONFIGURE STREAMLIT =========================
+# =========================== CONFIGURATION =========================== #
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
 st.title("🤖 Smart AI Chatbot")
 
-# ========================= GET USER IP (BAN FEATURE) =========================
+# =========================== DATABASE SETUP =========================== #
+conn = sqlite3.connect("chat_history.db")
+cursor = conn.cursor()
+cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_input TEXT,
+        ai_response TEXT,
+        feedback INTEGER
+    )
+""")
+conn.commit()
+
+# =========================== IP BANNING SYSTEM =========================== #
+BANNED_IPS = ["192.168.1.100", "203.0.113.45"]  # Add banned IPs here
 def get_user_ip():
     try:
         return socket.gethostbyname(socket.gethostname())
     except:
         return "Unknown"
-
-user_ip = get_user_ip()
-BANNED_IPS = ["192.168.1.100", "203.0.113.45"]  
-
-if user_ip in BANNED_IPS:
+if get_user_ip() in BANNED_IPS:
     st.error("🚫 You have been banned from using this chatbot.")
     st.stop()
 
-# ========================= MANAGE MULTIPLE CHATS =========================
+# =========================== AI MODEL SETUP =========================== #
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    st.error("Google API key is missing! Set it as an environment variable.")
+    st.stop()
+    
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+
+# =========================== CHAT SESSION MANAGEMENT =========================== #
 st.sidebar.header("💬 Manage Chats")
 if "chats" not in st.session_state:
     st.session_state["chats"] = {}
-
 chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
 chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
-
 if st.sidebar.button("➕ Start New Chat"):
     new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
-    st.session_state["chats"][new_chat_name] = {"messages": []}
+    st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
     chat_name = new_chat_name
-
 if chat_name not in st.session_state["chats"]:
-    st.session_state["chats"][chat_name] = {"messages": []}
-
+    st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
 chat_session = st.session_state["chats"][chat_name]
 messages = chat_session["messages"]
 
-# ========================= THEMES & CUSTOMIZATION =========================
-theme = st.sidebar.radio("🎨 Chatbot Theme", ["Light", "Dark", "Retro", "Cyberpunk"])
-if theme == "Dark":
-    st.markdown("<style>body { background-color: black; color: white; }</style>", unsafe_allow_html=True)
-elif theme == "Retro":
-    st.markdown("<style>body { background-color: #f4e1d2; color: black; }</style>", unsafe_allow_html=True)
-elif theme == "Cyberpunk":
-    st.markdown("<style>body { background-color: #080c1b; color: #0ff; }</style>", unsafe_allow_html=True)
+# =========================== DOCUMENT UPLOAD FOR RAG =========================== #
+st.sidebar.header("📂 Upload Documents for RAG")
+uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
+if uploaded_file:
+    def extract_text(file):
+        try:
+            if file.name.endswith(".pdf"):
+                reader = PdfReader(file)
+                return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+            elif file.name.endswith(".docx"):
+                return docx2txt.process(file)
+            else:
+                return file.read().decode("utf-8")
+        except Exception as e:
+            st.sidebar.error(f"Error processing file: {str(e)}")
+            return ""
+    extracted_text = extract_text(uploaded_file)
+    if extracted_text:
+        chat_session["context_docs"].append(extracted_text)
+        st.sidebar.success("✅ Document added to chatbot knowledge!")
 
-font = st.sidebar.selectbox("🖋️ Choose Font", ["Default", "Serif", "Monospace"])
-if font == "Serif":
-    st.markdown("<style>body { font-family: serif; }</style>", unsafe_allow_html=True)
-elif font == "Monospace":
-    st.markdown("<style>body { font-family: monospace; }</style>", unsafe_allow_html=True)
+# =========================== RETRIEVAL-AUGMENTED GENERATION (RAG) =========================== #
+retriever = None
+if chat_session["context_docs"]:
+    try:
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        docs = text_splitter.create_documents(chat_session["context_docs"])
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+        vector_store = FAISS.from_documents(docs, embeddings)
+        retriever = vector_store.as_retriever()
+    except Exception as e:
+        st.sidebar.error(f"❌ Error setting up RAG: {str(e)}")
 
-# ========================= SAVE & EXPORT CHAT =========================
-def save_chat(chat_name):
-    with open(f"{chat_name}.txt", "w") as file:
-        for msg in messages:
-            file.write(f"{msg['role'].capitalize()}: {msg['content']}\n")
-    st.sidebar.success("💾 Chat saved as TXT!")
+# =========================== AI RESPONSE IMPROVEMENT =========================== #
+def generate_response(prompt):
+    # Feedback-based response adaptation
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
+    positive_feedback = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
+    negative_feedback = cursor.fetchone()[0]
+    
+    adaptive_prompt = "Use a friendly tone." if positive_feedback > negative_feedback else "Provide more in-depth analysis."
+    structured_prompt = f"""
+    You are a professional AI assistant. Please provide detailed, well-explained responses.
+    User input: {prompt}
+    """
+    try:
+        response = llm.invoke(adaptive_prompt + "\n" + structured_prompt)
+        return response.content if response else "I couldn't generate a response."
+    except Exception as e:
+        st.error(f"❌ AI Error: {str(e)}")
+        return "I encountered an error while generating a response."
 
-if st.sidebar.button("💾 Save Chat"):
-    save_chat(chat_name)
-
-if st.sidebar.button("📄 Export as PDF"):
-    chat_text = "\n".join([f"{msg['role'].capitalize()}: {msg['content']}" for msg in messages])
-    pdfkit.from_string(chat_text, f"{chat_name}.pdf")
-    st.sidebar.success("✅ Chat exported as PDF!")
-
-# ========================= DISPLAY CHAT MESSAGES =========================
+# =========================== DISPLAY CHAT MESSAGES =========================== #
 st.subheader(f"💬 {chat_name}")
 for i, message in enumerate(messages):
     role = message["role"]
     content = message["content"]
-
     with st.chat_message(role):
-        col1, col2 = st.columns([0.85, 0.15])
+        col1, col2 = st.columns([0.9, 0.1])
         col1.markdown(content)
-
         if col2.button("📝", key=f"edit_{i}"):
             new_content = st.text_area(f"Edit message {i}", content)
             if st.button("✅ Save", key=f"save_{i}"):
                 messages[i]["content"] = new_content
-                st.rerun()
-
+                st.experimental_rerun()
         if col2.button("❌", key=f"delete_{i}"):
             del messages[i]
-            st.rerun()
+            st.experimental_rerun()
 
-# ========================= CHAT INPUT =========================
-input_text = st.chat_input("Type your message here... (Max 500 chars)")
-if input_text:
-    char_count = len(input_text)
-    st.sidebar.write(f"📝 {char_count}/500 characters used")
-    messages.append({"role": "user", "content": input_text})
-
+# =========================== USER INPUT HANDLING =========================== #
+if prompt := st.chat_input("Ask me anything..."):
+    messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(input_text)
+        st.markdown(prompt)
 
-    # Typing Indicator Simulation
-    with st.chat_message("assistant"):
-        response_container = st.empty()
-        response_container.markdown("🤖 AI is typing...")
-        time.sleep(1.5)
-
-    # AI Mood-Based Responses
-    if any(word in input_text.lower() for word in ["happy", "excited", "great"]):
-        response_text = "😊 That’s amazing to hear!"
-    elif any(word in input_text.lower() for word in ["sad", "depressed", "bad"]):
-        response_text = "😢 I’m here for you. Want to talk about it?"
+    response_text = ""
+    if retriever:
+        try:
+            memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+            retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
+            response_text = retrieval_chain.run(prompt)
+        except Exception as e:
+            st.error(f"❌ Error processing response: {str(e)}")
+            response_text = "I encountered an error while generating a response."
     else:
-        response_text = f"🤖 AI Response: {input_text[::-1]}"  # Simple reverse response for demo
-
-    messages.append({"role": "assistant", "content": response_text})
-
+        response_text = generate_response(prompt)
+    
     with st.chat_message("assistant"):
         st.markdown(response_text)
-
-# ========================= TEXT ANALYSIS =========================
-if st.sidebar.button("📊 Analyze Text"):
-    total_words = sum(len(msg["content"].split()) for msg in messages)
-    total_sentences = sum(msg["content"].count(".") for msg in messages)
-    readability_score = flesch_reading_ease("\n".join([msg["content"] for msg in messages]))
     
-    st.sidebar.write(f"📝 Total Words: {total_words}")
-    st.sidebar.write(f"📖 Total Sentences: {total_sentences}")
-    st.sidebar.write(f"📚 Readability Score: {round(readability_score, 2)}")
+    messages.append({"role": "assistant", "content": response_text})
+    cursor.execute("INSERT INTO chat_history (user_input, ai_response, feedback) VALUES (?, ?, ?)", (prompt, response_text, None))
+    conn.commit()
 
-# ========================= FUN EXTRAS =========================
-# 🎭 Easter Eggs
-easter_eggs = {
-    "hello there": "General Kenobi! ⚔️",
-    "i love you": "Awww, I love you too! 💙",
-    "open the pod bay doors": "I’m sorry, Dave. I’m afraid I can’t do that. 🚀"
-}
-
-if input_text and input_text.lower() in easter_eggs:
-    with st.chat_message("assistant"):
-        st.markdown(easter_eggs[input_text.lower()])
-
-# 🧠 Random Quote Generator
-if st.sidebar.button("💬 Random Quote"):
-    quotes = ["Believe in yourself!", "Stay positive!", "You got this!", "Every day is a second chance."]
-    st.sidebar.success(random.choice(quotes))
-
-# 🧐 Daily Fun Fact
-if st.sidebar.button("📅 Fun Fact"):
-    facts = ["Did you know honey never spoils?", "Bananas are berries, but strawberries aren't!", "Octopuses have three hearts."]
-    st.sidebar.success(random.choice(facts))
-
-# ========================= DELETE CHAT =========================
+# =========================== CHAT DELETION =========================== #
 if st.sidebar.button("🗑️ Delete Chat"):
     del st.session_state["chats"][chat_name]
-    st.rerun()
+    st.experimental_rerun()
