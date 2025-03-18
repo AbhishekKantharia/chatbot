@@ -63,7 +63,7 @@ if auth_choice == "Login":
         if user_id:
             st.session_state["user_id"] = user_id
             st.sidebar.success(f"Logged in as {username}")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.sidebar.error("Invalid credentials")
 
