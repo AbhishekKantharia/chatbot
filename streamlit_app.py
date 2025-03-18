@@ -74,19 +74,6 @@ def generate_response(prompt, theme):
         return f"⚖️ Legal Analysis: {prompt}"
     return f"🤖 Default: {prompt}"
 
-# Voice Input & Output
-st.sidebar.header("🎤 Voice Input & Output")
-if st.sidebar.button("🎙️ Speak"):
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        st.sidebar.info("Listening...")
-        audio = recognizer.listen(source)
-    try:
-        voice_prompt = recognizer.recognize_google(audio)
-        st.sidebar.write(f"**You said:** {voice_prompt}")
-    except:
-        st.sidebar.error("Could not recognize speech!")
-
 # Chat Input
 if prompt := st.chat_input("Ask me anything..."):
     messages.append({"role": "user", "content": prompt})
