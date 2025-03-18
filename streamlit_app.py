@@ -5,6 +5,8 @@ import random
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_community.vectorstores import FAISS  
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 # ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
@@ -33,14 +35,16 @@ negative_feedback_count = cursor.fetchone()[0]
 # ========================= CHATBOT MEMORY =========================
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-# ========================= GOOGLE GEMINI CHATBOT FUNCTION =========================
-from langchain_community.vectorstores import FAISS  # Ensure FAISS is imported
+# ========================= GOOGLE GEMINI CHATBOT FUNCTION ========================= 
+
+# Load embeddings model
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # Ensure correct model
 
 def chat_response(user_input, dynamic_prompt=None):
     """ Generate AI response with conversational memory """
-    
-    # Load FAISS vector store or create a new one
-    retriever = FAISS.load_local("faiss_index").as_retriever()
+
+    # Load FAISS vector store with embeddings
+    retriever = FAISS.load_local("faiss_index", embeddings).as_retriever()
 
     # Set up the conversational retrieval chain
     chain = ConversationalRetrievalChain.from_llm(
