@@ -81,8 +81,6 @@ if prompt := st.chat_input("Ask me anything..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-   response_text = ""  # Initialize response_text before using it
-
 response_text = ""  # Initialize response_text before using it
 
 if retriever:
