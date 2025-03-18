@@ -127,10 +127,10 @@ for i, message in enumerate(messages):
             new_content = st.text_area(f"Edit message {i}", content)
             if st.button("✅ Save", key=f"save_{i}"):
                 messages[i]["content"] = new_content
-                st.experimental_rerun()
+                st.rerun()
         if col2.button("❌", key=f"delete_{i}"):
             del messages[i]
-            st.experimental_rerun()
+            st.rerun()
 
 # =========================== USER INPUT HANDLING =========================== #
 if prompt := st.chat_input("Ask me anything..."):
@@ -160,4 +160,4 @@ if prompt := st.chat_input("Ask me anything..."):
 # =========================== CHAT DELETION =========================== #
 if st.sidebar.button("🗑️ Delete Chat"):
     del st.session_state["chats"][chat_name]
-    st.experimental_rerun()
+    st.rerun()
