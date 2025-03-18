@@ -13,6 +13,7 @@ import speech_recognition as sr
 from gtts import gTTS
 import matplotlib.pyplot as plt
 import pdfkit
+import re
 
 # Configure Streamlit
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
@@ -80,41 +81,45 @@ if prompt := st.chat_input("Ask me anything..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Use RAG if context is available, else only AI
-    if retriever:
-        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-        retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
+   response_text = ""  # Initialize response_text before using it
 
-        def process_input(input_text):
-            return retrieval_chain.invoke(input_text)
+response_text = ""  # Initialize response_text before using it
 
-        rag_pipeline = RunnableLambda(process_input)
+if retriever:
+    memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+    retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
 
-        response_text = ""
-        with st.chat_message("assistant"):
-            response_container = st.empty()
+    def process_input(input_text):
+        return retrieval_chain.invoke(input_text)
 
-            for chunk in rag_pipeline.stream(prompt):
-                if isinstance(chunk, str):
-                    response_text += chunk
-                elif hasattr(chunk, "text"):
-                    response_text += chunk.text
-                elif hasattr(chunk, "content"):
-                    response_text += chunk.content
+    rag_pipeline = RunnableLambda(process_input)
+
+    with st.chat_message("assistant"):
+        response_container = st.empty()
+
+        for chunk in rag_pipeline.stream(prompt):
+            if isinstance(chunk, str):
+                response_text += chunk
+            elif hasattr(chunk, "text"):
+                response_text += chunk.text
+            elif hasattr(chunk, "content"):
+                response_text += chunk.content
         
-            response_container.markdown(response_text)
+        response_container.markdown(response_text)
 
-    else:
-        response = llm.invoke(prompt)
-        response_text = response.content if response else "I couldn't generate a response."
+else:
+    response = llm.invoke(prompt)
+    response_text = response.content if response else "I couldn't generate a response."
 
-        with st.chat_message("assistant"):
-            st.markdown(response_text)
+    with st.chat_message("assistant"):
+        st.markdown(response_text)
 
-    # Store assistant response
-    messages.append({"role": "assistant", "content": response_text})
+# Ensure response_text is available before using it
+if not response_text:
+    response_text = "No response generated."
 
-import re
+# Store assistant response
+messages.append({"role": "assistant", "content": response_text})
 
 # Clean response text
 def clean_text_for_tts(text):
