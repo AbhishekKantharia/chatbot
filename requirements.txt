@@ -1,7 +1,6 @@
 streamlit
 google-generativeai
-langchain>=0.1.0
+langchain
 langchain-google-genai
 langchain-community
-pydantic
-faiss-cpu
+PyPDF2
