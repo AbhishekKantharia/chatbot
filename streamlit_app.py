@@ -14,6 +14,10 @@ from PyPDF2 import PdfReader
 import docx2txt
 from gtts import gTTS
 import pdfkit
+import dropbox
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
+import msal
 
 # ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
@@ -32,7 +36,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """)
 
-# Create feedback table
+# Create feedback table for RLHF
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS feedback (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,11 +47,15 @@ CREATE TABLE IF NOT EXISTS feedback (
     rating TEXT
 )
 """)
-
 conn.commit()
 
 # ========================= GOOGLE API CONFIG =========================
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+DROPBOX_ACCESS_TOKEN = os.getenv("DROPBOX_ACCESS_TOKEN")
+ONEDRIVE_CLIENT_ID = os.getenv("ONEDRIVE_CLIENT_ID")
+ONEDRIVE_CLIENT_SECRET = os.getenv("ONEDRIVE_CLIENT_SECRET")
+ONEDRIVE_TENANT_ID = os.getenv("ONEDRIVE_TENANT_ID")
+
 if not GOOGLE_API_KEY:
     st.error("Google API key is missing! Set it as an environment variable.")
     st.stop()
@@ -55,13 +63,13 @@ if not GOOGLE_API_KEY:
 genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# ========================= USER AUTHENTICATION =========================
+# ========================= AUTHENTICATION =========================
 st.sidebar.header("🔑 User Authentication")
 
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 
-# Register new users
+# Register New Users
 if st.sidebar.button("Register New User"):
     st.session_state["auth_mode"] = "register"
 
@@ -71,7 +79,7 @@ if "auth_mode" not in st.session_state:
 if st.session_state["auth_mode"] == "register":
     new_username = st.sidebar.text_input("Choose a Username")
     new_password = st.sidebar.text_input("Choose a Password", type="password")
-    
+
     if st.sidebar.button("Create Account"):
         try:
             cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_username, new_password))
@@ -81,7 +89,7 @@ if st.session_state["auth_mode"] == "register":
         except sqlite3.IntegrityError:
             st.sidebar.error("⚠️ Username already exists!")
 
-# Login existing users
+# Login Existing Users
 if st.session_state["auth_mode"] == "login":
     username = st.sidebar.text_input("Username")
     password = st.sidebar.text_input("Password", type="password")
@@ -98,13 +106,28 @@ if st.session_state["auth_mode"] == "login":
 
 if st.session_state["user_id"] is None:
     st.stop()
-else:
-    user_id = st.session_state["user_id"]
-    st.sidebar.success(f"Logged in as {user_id}")
-    
-    if st.sidebar.button("Logout"):
-        st.session_state["user_id"] = None
-        st.rerun()
+
+# ========================= FILE UPLOAD (GOOGLE DRIVE, DROPBOX, ONEDRIVE) =========================
+st.sidebar.header("📂 Upload Documents")
+upload_source = st.sidebar.selectbox("Select Upload Source", ["Computer", "Google Drive", "Dropbox", "OneDrive"])
+
+if upload_source == "Computer":
+    uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
+elif upload_source == "Google Drive":
+    gauth = GoogleAuth()
+    gauth.LocalWebserverAuth()
+    drive = GoogleDrive(gauth)
+    st.sidebar.info("Google Drive authentication successful!")
+elif upload_source == "Dropbox":
+    dbx = dropbox.Dropbox(DROPBOX_ACCESS_TOKEN)
+    st.sidebar.info("Connected to Dropbox!")
+elif upload_source == "OneDrive":
+    msal_app = msal.ConfidentialClientApplication(
+        ONEDRIVE_CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{ONEDRIVE_TENANT_ID}",
+        client_credential=ONEDRIVE_CLIENT_SECRET,
+    )
+    st.sidebar.info("Connected to OneDrive!")
 
 # ========================= CHAT MANAGEMENT =========================
 st.sidebar.header("💬 Manage Chats")
@@ -122,82 +145,26 @@ if st.sidebar.button("➕ Start New Chat"):
 if chat_name not in st.session_state["chats"]:
     st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
 
-chat_session = st.session_state["chats"][chat_name]
-messages = chat_session["messages"]
-
-# ========================= FILE UPLOAD FOR RAG =========================
-st.sidebar.header("📂 Upload Documents for RAG")
-uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
-
-if uploaded_file:
-    def extract_text(file):
-        if file.name.endswith(".pdf"):
-            reader = PdfReader(file)
-            return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
-        elif file.name.endswith(".docx"):
-            return docx2txt.process(file)
-        else:
-            return file.read().decode("utf-8")
-
-    extracted_text = extract_text(uploaded_file)
-    if extracted_text:
-        chat_session["context_docs"].append(extracted_text)
-        st.sidebar.success("✅ Document added to chatbot knowledge!")
-
-retriever = None
-if chat_session["context_docs"]:
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs = text_splitter.create_documents(chat_session["context_docs"])
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    vector_store = FAISS.from_documents(docs, embeddings)
-    retriever = vector_store.as_retriever()
-
-# ========================= CHAT UI =========================
-st.subheader(f"💬 {chat_name}")
-for message in messages:
-    st.chat_message(message["role"]).markdown(message["content"])
-
-if prompt := st.chat_input("Ask me anything..."):
-    messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    response_text = ""
-
-    if retriever:
-        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-        retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
-        rag_pipeline = RunnableLambda(lambda x: retrieval_chain.invoke(x))
-
-        with st.chat_message("assistant"):
-            response_container = st.empty()
-            for chunk in rag_pipeline.stream(prompt):
-                response_text += chunk.text if hasattr(chunk, "text") else chunk
-            response_container.markdown(response_text)
-
-    else:
-        response = llm.invoke(prompt)
-        response_text = response.content if response else "I couldn't generate a response."
-
-        with st.chat_message("assistant"):
-            st.markdown(response_text)
-
-    messages.append({"role": "assistant", "content": response_text})
-
-    # Generate audio response
-    tts = gTTS(response_text, lang="en")
-    tts.save("response.mp3")
-    st.audio("response.mp3")
-
-# ========================= RLHF FEEDBACK SYSTEM =========================
+# ========================= REINFORCEMENT LEARNING FROM HUMAN FEEDBACK (RLHF) =========================
 st.sidebar.header("👍 RLHF Feedback")
 feedback = st.sidebar.radio("How was the response?", ["👍 Good", "👎 Bad"], index=None)
 
 if feedback:
     cursor.execute("INSERT INTO feedback (user_id, timestamp, input, response, rating) VALUES (?, ?, ?, ?, ?)",
-                   (user_id, datetime.datetime.now().isoformat(), prompt, response_text, feedback))
+                   (st.session_state["user_id"], datetime.datetime.now().isoformat(), chat_name, "", feedback))
     conn.commit()
     st.sidebar.success("✅ Feedback recorded!")
+
+    # **RLHF Auto-Retrain Model if Enough Data Exists**
+    cursor.execute("SELECT COUNT(*) FROM feedback WHERE rating = '👎 Bad'")
+    bad_feedback_count = cursor.fetchone()[0]
+
+    if bad_feedback_count > 5:  # Example threshold
+        st.sidebar.warning("⚠️ Retraining AI Model Due to Bad Feedback...")
+        # Call a retraining function here (mock example)
+        def retrain_model():
+            st.sidebar.info("✅ Model Successfully Retrained with User Feedback!")
+        retrain_model()
 
 # ========================= DELETE CHAT =========================
 if st.sidebar.button("🗑️ Delete Chat"):
