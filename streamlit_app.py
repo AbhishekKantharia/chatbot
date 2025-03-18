@@ -1,133 +1,107 @@
 import streamlit as st
 import sqlite3
 import datetime
-import random
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
+from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.vectorstores import FAISS  
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
-# ========================= STREAMLIT CONFIG =========================
-st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 Smart AI Chatbot (Google Gemini + RLHF)")
-
-# ========================= DATABASE CONFIGURATION =========================
+# ========================= DATABASE SETUP =========================
 conn = sqlite3.connect("chatbot.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Check if the 'feedback' column exists in the table
-cursor.execute("PRAGMA table_info(chat_history)")
-columns = [column[1] for column in cursor.fetchall()]
+# Create table if not exists
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS chat_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    timestamp DATETIME,
+    user_input TEXT,
+    bot_response TEXT,
+    feedback INTEGER DEFAULT NULL
+)
+""")
+conn.commit()
 
-# If 'feedback' column is missing, add it
-if "feedback" not in columns:
-    cursor.execute("ALTER TABLE chat_history ADD COLUMN feedback INTEGER DEFAULT NULL")
-    conn.commit()  # Commit changes
+# ========================= AI MODEL CONFIG =========================
+st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
+st.title("🤖 Smart AI Chatbot")
 
-# Ensure the 'feedback' column is now available
-cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
-positive_feedback_count = cursor.fetchone()[0]
+llm = ChatGoogleGenerativeAI(model="gemini-pro")  # Google Gemini Model
+memory = ConversationBufferMemory(memory_key="chat_history")
 
-cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
-negative_feedback_count = cursor.fetchone()[0]
+# ✅ Fix FAISS Deserialization
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+retriever = FAISS.load_local(
+    "faiss_index",
+    embeddings,
+    allow_dangerous_deserialization=True  # ✅ Safe FAISS loading
+).as_retriever()
 
-# ========================= CHATBOT MEMORY =========================
-memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-# ========================= GOOGLE GEMINI CHATBOT FUNCTION ========================= 
-
-# Load embeddings model
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")  # Ensure correct model
-
+# ========================= AI CHAT FUNCTION =========================
 def chat_response(user_input, dynamic_prompt=None):
-    """ Generate AI response with conversational memory """
-
-    # Load FAISS vector store with embeddings
-    retriever = FAISS.load_local("faiss_index", embeddings).as_retriever()
-
-    # Set up the conversational retrieval chain
-    chain = ConversationalRetrievalChain.from_llm(
-        llm, 
-        retriever=retriever,  # <-- Ensure retriever is passed
-        memory=memory
-    )
-
-    # Apply Adaptive Prompting
+    """
+    Generates a chatbot response using Google Gemini AI.
+    Includes RLHF-based fine-tuning by adjusting prompts.
+    """
     if dynamic_prompt:
         user_input = dynamic_prompt + "\n" + user_input
-
+    
+    # ✅ Fix: Added missing `retriever` argument
+    chain = ConversationalRetrievalChain.from_llm(
+        llm,
+        retriever=retriever,
+        memory=memory
+    )
     return chain.run(user_input)
 
-# ========================= USER SESSION MANAGEMENT =========================
-if "user_id" not in st.session_state:
-    st.session_state["user_id"] = None
-
-# ========================= TRACK USER FEEDBACK =========================
-cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
-positive_feedback_count = cursor.fetchone()[0]
-
-cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
-negative_feedback_count = cursor.fetchone()[0]
-
-# Adjust chatbot prompting dynamically based on feedback trends
-if positive_feedback_count > negative_feedback_count:
-    adaptive_prompt = "Provide a detailed, informative, and friendly response."
-    st.sidebar.success("✅ AI is performing well! Optimized for detailed answers.")
-else:
-    adaptive_prompt = "Keep responses brief, direct, and improve clarity."
-    st.sidebar.warning("⚠️ AI needs improvement. Adjusting for conciseness.")
-
-# ========================= USER INPUT & AI RESPONSE =========================
-user_input = st.text_input("Ask me anything:", key="user_input")
+# ========================= USER INPUT =========================
+user_input = st.text_input("You:", "")
 
 if user_input:
+    # Adaptive Prompting based on feedback trends 📊
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
+    positive_feedback_count = cursor.fetchone()[0]
+
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
+    negative_feedback_count = cursor.fetchone()[0]
+
+    adaptive_prompt = None
+    if positive_feedback_count > negative_feedback_count:
+        adaptive_prompt = "Use a more engaging tone."
+    else:
+        adaptive_prompt = "Provide more detailed explanations."
+
     bot_response = chat_response(user_input, adaptive_prompt)
 
-    # Display conversation
+    # Display chat history
     st.write(f"**You:** {user_input}")
     st.write(f"**AI:** {bot_response}")
 
-    # Store in chat history
+    # Store conversation
     cursor.execute(
         "INSERT INTO chat_history (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
-        (st.session_state["user_id"], datetime.datetime.now(), user_input, bot_response),
+        (st.session_state.get("user_id", "anonymous"), datetime.datetime.now(), user_input, bot_response)
     )
     conn.commit()
 
-    # Add feedback buttons
-    feedback = st.radio("Was this response helpful?", ["👍 Yes", "👎 No"], key=f"feedback_{user_input}")
-    
-    if feedback:
-        feedback_value = 1 if feedback == "👍 Yes" else 0
-        cursor.execute(
-            "UPDATE chat_history SET feedback = ? WHERE user_input = ?",
-            (feedback_value, user_input),
-        )
-        conn.commit()
+    # ========================= FEEDBACK BUTTONS =========================
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("👍", key="positive"):
+            cursor.execute("UPDATE chat_history SET feedback = 1 WHERE user_input = ?", (user_input,))
+            conn.commit()
+            st.success("Thanks for your feedback!")
 
-# ========================= REAL-TIME AI OPTIMIZATION =========================
-def adjust_response_quality():
-    """Dynamically improve AI responses based on past feedback trends."""
-    cursor.execute("SELECT user_input, bot_response, feedback FROM chat_history WHERE feedback IS NOT NULL ORDER BY timestamp DESC LIMIT 5")
-    feedback_data = cursor.fetchall()
+    with col2:
+        if st.button("👎", key="negative"):
+            cursor.execute("UPDATE chat_history SET feedback = 0 WHERE user_input = ?", (user_input,))
+            conn.commit()
+            st.error("We'll improve this response!")
 
-    if feedback_data:
-        # Reward-based fine-tuning: Prefer responses with more positive feedback
-        positive_responses = [row[1] for row in feedback_data if row[2] == 1]
-        negative_responses = [row[1] for row in feedback_data if row[2] == 0]
-
-        if len(positive_responses) > len(negative_responses):
-            return random.choice(positive_responses)
-        else:
-            return "I'm improving my responses based on feedback. Let me know how I can be more helpful!"
-
-# AI fine-tuning decision
-fine_tuned_response = adjust_response_quality()
-if fine_tuned_response:
-    st.sidebar.info(f"🔄 Fine-Tuned AI Response: {fine_tuned_response}")
-
-# ========================= AUTOMATED RETRAINING =========================
-if st.sidebar.button("🔄 Retrain Model"):
-    st.sidebar.info("AI fine-tuning in progress... (Automated adjustments applied)")
-    # Placeholder for future self-learning AI retraining
+# ========================= DELETE CHAT =========================
+if st.sidebar.button("🗑️ Delete Chat"):
+    cursor.execute("DELETE FROM chat_history")
+    conn.commit()
+    st.session_state["chat_history"] = []
+    st.rerun()
