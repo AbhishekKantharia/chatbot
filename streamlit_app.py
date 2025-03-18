@@ -28,8 +28,8 @@ if not GOOGLE_API_KEY:
 genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# Initialize session state for multi-user chat
-user_id = st.query_params().get("user", ["default"])[0]
+# Initialize session state for multi-user chat# Get user_id from URL parameters, default to "default"
+user_id = st.query_params.get("user", "default")
 if user_id not in st.session_state:
     st.session_state[user_id] = {"messages": [], "context_docs": []}
 
