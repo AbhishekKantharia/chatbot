@@ -15,8 +15,9 @@ import datetime
 import dropbox
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-import msal
 import requests
+import msal
+print("MSAL is installed successfully!")
 
 # Microsoft App Credentials
 CLIENT_ID = "your-client-id"
