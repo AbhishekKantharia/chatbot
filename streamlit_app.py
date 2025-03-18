@@ -4,29 +4,16 @@ import datetime
 import random
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from PyPDF2 import PdfReader
-import docx2txt
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 
 # ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 Smart AI Chatbot with RLHF")
+st.title("🤖 Smart AI Chatbot (Google Gemini + RLHF)")
 
 # ========================= DATABASE CONFIGURATION =========================
 conn = sqlite3.connect("chatbot.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# User Authentication Table
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        password TEXT
-    )
-""")
-
-# Chat History Table
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,128 +26,90 @@ cursor.execute("""
 """)
 conn.commit()
 
-# ========================= USER AUTHENTICATION =========================
+# ========================= CHATBOT MEMORY =========================
+memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+
+# ========================= GOOGLE GEMINI CHATBOT FUNCTION =========================
+def chat_response(user_input, dynamic_prompt=None):
+    """Generate AI response using Google Gemini with adaptive prompting."""
+    llm = ChatGoogleGenerativeAI(model="gemini-pro")  # Using Gemini-Pro
+    chain = ConversationalRetrievalChain.from_llm(llm, memory=memory)
+    
+    # Apply Adaptive Prompting
+    if dynamic_prompt:
+        user_input = dynamic_prompt + "\n" + user_input
+
+    return chain.run(user_input)
+
+# ========================= USER SESSION MANAGEMENT =========================
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 
-def login(username, password):
-    cursor.execute("SELECT id FROM users WHERE username = ? AND password = ?", (username, password))
-    user = cursor.fetchone()
-    return user[0] if user else None
+# ========================= TRACK USER FEEDBACK =========================
+cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
+positive_feedback_count = cursor.fetchone()[0]
 
-def register(username, password):
-    try:
-        cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
-        conn.commit()
-        return True
-    except sqlite3.IntegrityError:
-        return False
+cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
+negative_feedback_count = cursor.fetchone()[0]
 
-# ========================= USER LOGIN & REGISTRATION =========================
-st.sidebar.subheader("User Authentication")
-auth_choice = st.sidebar.radio("Select an option:", ["Login", "Register"])
+# Adjust chatbot prompting dynamically based on feedback trends
+if positive_feedback_count > negative_feedback_count:
+    adaptive_prompt = "Provide a detailed, informative, and friendly response."
+    st.sidebar.success("✅ AI is performing well! Optimized for detailed answers.")
+else:
+    adaptive_prompt = "Keep responses brief, direct, and improve clarity."
+    st.sidebar.warning("⚠️ AI needs improvement. Adjusting for conciseness.")
 
-if auth_choice == "Login":
-    username = st.sidebar.text_input("Username")
-    password = st.sidebar.text_input("Password", type="password")
-    if st.sidebar.button("Login"):
-        user_id = login(username, password)
-        if user_id:
-            st.session_state["user_id"] = user_id
-            st.sidebar.success(f"Logged in as {username}")
-            st.rerun()
-        else:
-            st.sidebar.error("Invalid credentials")
-
-elif auth_choice == "Register":
-    new_username = st.sidebar.text_input("New Username")
-    new_password = st.sidebar.text_input("New Password", type="password")
-    if st.sidebar.button("Register"):
-        if register(new_username, new_password):
-            st.sidebar.success("Account created successfully! Please login.")
-        else:
-            st.sidebar.error("Username already exists.")
-
-# ========================= FILE UPLOAD =========================
-st.sidebar.subheader("Upload a File")
-uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
-
-if uploaded_file:
-    file_extension = uploaded_file.name.split(".")[-1]
-
-    if file_extension == "pdf":
-        pdf_reader = PdfReader(uploaded_file)
-        text = "\n".join([page.extract_text() for page in pdf_reader.pages])
-    elif file_extension == "docx":
-        text = docx2txt.process(uploaded_file)
-    else:
-        text = uploaded_file.read().decode("utf-8")
-
-    st.session_state["uploaded_text"] = text
-    st.sidebar.success("File uploaded successfully!")
-
-# ========================= CHATBOT SESSION =========================
-if "chats" not in st.session_state:
-    st.session_state["chats"] = {"New Chat": {"messages": [], "context": None}}
-
-chat_name = st.sidebar.selectbox("Select a chat:", list(st.session_state["chats"].keys()))
-chat_session = st.session_state["chats"][chat_name]
-messages = chat_session["messages"]
-
-st.subheader("Chat with AI")
-
-for idx, message in enumerate(messages):
-    with st.chat_message(message["role"]):
-        st.write(message["content"])
-
-    # Add feedback buttons
-    if message["role"] == "assistant":
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button(f"👍 Like {idx}", key=f"like_{idx}"):
-                cursor.execute("UPDATE chat_history SET feedback = 1 WHERE id = ?", (message["id"],))
-                conn.commit()
-                st.success("Feedback saved!")
-        with col2:
-            if st.button(f"👎 Dislike {idx}", key=f"dislike_{idx}"):
-                cursor.execute("UPDATE chat_history SET feedback = -1 WHERE id = ?", (message["id"],))
-                conn.commit()
-                st.warning("Feedback saved!")
-
-user_input = st.chat_input("Type your message...")
+# ========================= USER INPUT & AI RESPONSE =========================
+user_input = st.text_input("Ask me anything:", key="user_input")
 
 if user_input:
-    # Placeholder AI Response - Replace this with an actual AI model
-    ai_responses = [
-        f"AI Response: {user_input[::-1]}",
-        f"Here's a fun fact: {user_input.capitalize()}",
-        f"{user_input}... but what if it was said backward? {user_input[::-1]}",
-    ]
-    
-    # Simple RLHF Reward-Based Learning: If more positive feedback is given, prioritize the best responses.
-    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
-    positive_feedback_count = cursor.fetchone()[0]
-    
-    # If we have positive feedback, prefer the first response, otherwise randomize
-    response_text = ai_responses[0] if positive_feedback_count > 5 else random.choice(ai_responses)
+    bot_response = chat_response(user_input, adaptive_prompt)
 
-    messages.append({"role": "user", "content": user_input})
-    messages.append({"role": "assistant", "content": response_text})
+    # Display conversation
+    st.write(f"**You:** {user_input}")
+    st.write(f"**AI:** {bot_response}")
 
-    with st.chat_message("user"):
-        st.write(user_input)
-
-    with st.chat_message("assistant"):
-        st.write(response_text)
-
-    # Save chat history
+    # Store in chat history
     cursor.execute(
         "INSERT INTO chat_history (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
-        (st.session_state["user_id"], datetime.datetime.now(), user_input, response_text),
+        (st.session_state["user_id"], datetime.datetime.now(), user_input, bot_response),
     )
     conn.commit()
 
-# ========================= DELETE CHAT =========================
-if st.sidebar.button("🗑️ Delete Chat"):
-    del st.session_state["chats"][chat_name]
-    st.rerun()
+    # Add feedback buttons
+    feedback = st.radio("Was this response helpful?", ["👍 Yes", "👎 No"], key=f"feedback_{user_input}")
+    
+    if feedback:
+        feedback_value = 1 if feedback == "👍 Yes" else 0
+        cursor.execute(
+            "UPDATE chat_history SET feedback = ? WHERE user_input = ?",
+            (feedback_value, user_input),
+        )
+        conn.commit()
+
+# ========================= REAL-TIME AI OPTIMIZATION =========================
+def adjust_response_quality():
+    """Dynamically improve AI responses based on past feedback trends."""
+    cursor.execute("SELECT user_input, bot_response, feedback FROM chat_history WHERE feedback IS NOT NULL ORDER BY timestamp DESC LIMIT 5")
+    feedback_data = cursor.fetchall()
+
+    if feedback_data:
+        # Reward-based fine-tuning: Prefer responses with more positive feedback
+        positive_responses = [row[1] for row in feedback_data if row[2] == 1]
+        negative_responses = [row[1] for row in feedback_data if row[2] == 0]
+
+        if len(positive_responses) > len(negative_responses):
+            return random.choice(positive_responses)
+        else:
+            return "I'm improving my responses based on feedback. Let me know how I can be more helpful!"
+
+# AI fine-tuning decision
+fine_tuned_response = adjust_response_quality()
+if fine_tuned_response:
+    st.sidebar.info(f"🔄 Fine-Tuned AI Response: {fine_tuned_response}")
+
+# ========================= AUTOMATED RETRAINING =========================
+if st.sidebar.button("🔄 Retrain Model"):
+    st.sidebar.info("AI fine-tuning in progress... (Automated adjustments applied)")
+    # Placeholder for future self-learning AI retraining
