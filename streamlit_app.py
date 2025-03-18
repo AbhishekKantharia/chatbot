@@ -1,6 +1,7 @@
 import streamlit as st
 import sqlite3
 import datetime
+import random
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain_community.vectorstores import FAISS
@@ -10,12 +11,13 @@ import docx2txt
 
 # ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 Smart AI Chatbot")
+st.title("🤖 Smart AI Chatbot with RLHF")
 
 # ========================= DATABASE CONFIGURATION =========================
 conn = sqlite3.connect("chatbot.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# User Authentication Table
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -23,12 +25,16 @@ cursor.execute("""
         password TEXT
     )
 """)
+
+# Chat History Table
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         timestamp DATETIME,
         user_input TEXT,
-        bot_response TEXT
+        bot_response TEXT,
+        feedback INTEGER DEFAULT NULL
     )
 """)
 conn.commit()
@@ -52,7 +58,6 @@ def register(username, password):
 
 # ========================= USER LOGIN & REGISTRATION =========================
 st.sidebar.subheader("User Authentication")
-
 auth_choice = st.sidebar.radio("Select an option:", ["Login", "Register"])
 
 if auth_choice == "Login":
@@ -104,15 +109,40 @@ messages = chat_session["messages"]
 
 st.subheader("Chat with AI")
 
-for message in messages:
+for idx, message in enumerate(messages):
     with st.chat_message(message["role"]):
         st.write(message["content"])
+
+    # Add feedback buttons
+    if message["role"] == "assistant":
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button(f"👍 Like {idx}", key=f"like_{idx}"):
+                cursor.execute("UPDATE chat_history SET feedback = 1 WHERE id = ?", (message["id"],))
+                conn.commit()
+                st.success("Feedback saved!")
+        with col2:
+            if st.button(f"👎 Dislike {idx}", key=f"dislike_{idx}"):
+                cursor.execute("UPDATE chat_history SET feedback = -1 WHERE id = ?", (message["id"],))
+                conn.commit()
+                st.warning("Feedback saved!")
 
 user_input = st.chat_input("Type your message...")
 
 if user_input:
-    # Simulated AI response
-    response_text = f"AI Response: {user_input[::-1]}"  # Just a placeholder response
+    # Placeholder AI Response - Replace this with an actual AI model
+    ai_responses = [
+        f"AI Response: {user_input[::-1]}",
+        f"Here's a fun fact: {user_input.capitalize()}",
+        f"{user_input}... but what if it was said backward? {user_input[::-1]}",
+    ]
+    
+    # Simple RLHF Reward-Based Learning: If more positive feedback is given, prioritize the best responses.
+    cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
+    positive_feedback_count = cursor.fetchone()[0]
+    
+    # If we have positive feedback, prefer the first response, otherwise randomize
+    response_text = ai_responses[0] if positive_feedback_count > 5 else random.choice(ai_responses)
 
     messages.append({"role": "user", "content": user_input})
     messages.append({"role": "assistant", "content": response_text})
@@ -124,8 +154,10 @@ if user_input:
         st.write(response_text)
 
     # Save chat history
-    cursor.execute("INSERT INTO chat_history (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
-                   (st.session_state["user_id"], datetime.datetime.now(), user_input, response_text))
+    cursor.execute(
+        "INSERT INTO chat_history (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
+        (st.session_state["user_id"], datetime.datetime.now(), user_input, response_text),
+    )
     conn.commit()
 
 # ========================= DELETE CHAT =========================
