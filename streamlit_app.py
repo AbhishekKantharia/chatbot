@@ -117,17 +117,21 @@ if st.sidebar.button("🌦️ Get Weather"):
         st.sidebar.error("Could not fetch weather data.")
 
 def get_news():
-    api_key = "YOUR_NEWSAPI_KEY"
+    api_key = "YOUR_NEWSAPI_KEY"  # Replace with a valid API key
     url = f"https://newsapi.org/v2/top-headlines?country=us&apiKey={api_key}"
-    response = requests.get(url).json()
-    return response["articles"][0]["title"]
+    
+    try:
+        response = requests.get(url).json()
+        if "articles" in response and response["articles"]:
+            return response["articles"][0]["title"]
+        else:
+            return "No news found."
+    except Exception as e:
+        return f"Error fetching news: {str(e)}"
 
 if st.sidebar.button("📰 Get News"):
-    try:
-        news_info = get_news()
-        st.sidebar.success(news_info)
-    except:
-        st.sidebar.error("Could not fetch news data.")
+    news_info = get_news()
+    st.sidebar.success(news_info)
 
 # ======================== CHAT FUNCTIONALITY ========================
 prompt = st.chat_input("Ask me anything...")
