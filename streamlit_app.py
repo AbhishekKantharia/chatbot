@@ -9,6 +9,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema.runnable import RunnableLambda
+import google.generativeai as genai
+
+genai.configure(api_key="your-api-key-here")
+
+try:
+    model = genai.GenerativeModel("gemini-1.5-pro")
+    response = model.generate_content("Hello, how are you?")
+    print(response.text)
+except Exception as e:
+    print(f"API Error: {e}")
 
 # ------------------ 🏗️ Streamlit Page Setup ------------------
 st.set_page_config(page_title="AI Chatbot", page_icon="🤖", layout="wide")
