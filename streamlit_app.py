@@ -19,6 +19,33 @@ import pdfkit
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
 st.title("🤖 Smart AI Chatbot")
 
+# ========================= DATABASE SETUP =========================
+conn = sqlite3.connect("chatbot.db", check_same_thread=False)
+cursor = conn.cursor()
+
+# Create user table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+)
+""")
+
+# Create feedback table
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id TEXT,
+    timestamp DATETIME,
+    input TEXT,
+    response TEXT,
+    rating TEXT
+)
+""")
+
+conn.commit()
+
 # ========================= GOOGLE API CONFIG =========================
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
@@ -29,32 +56,55 @@ genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
 # ========================= USER AUTHENTICATION =========================
+st.sidebar.header("🔑 User Authentication")
+
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 
-st.sidebar.header("🔑 User Authentication")
+# Register new users
+if st.sidebar.button("Register New User"):
+    st.session_state["auth_mode"] = "register"
 
-# Dummy user database (replace with real authentication)
-USERS = {"admin": "password123", "user1": "chatbot2024"}
+if "auth_mode" not in st.session_state:
+    st.session_state["auth_mode"] = "login"
 
-if st.session_state["user_id"] is None:
+if st.session_state["auth_mode"] == "register":
+    new_username = st.sidebar.text_input("Choose a Username")
+    new_password = st.sidebar.text_input("Choose a Password", type="password")
+    
+    if st.sidebar.button("Create Account"):
+        try:
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_username, new_password))
+            conn.commit()
+            st.sidebar.success("✅ Account created! Please log in.")
+            st.session_state["auth_mode"] = "login"
+        except sqlite3.IntegrityError:
+            st.sidebar.error("⚠️ Username already exists!")
+
+# Login existing users
+if st.session_state["auth_mode"] == "login":
     username = st.sidebar.text_input("Username")
     password = st.sidebar.text_input("Password", type="password")
+
     if st.sidebar.button("Login"):
-        if username in USERS and USERS[username] == password:
-            st.session_state["user_id"] = username
+        cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+        user = cursor.fetchone()
+
+        if user:
+            st.session_state["user_id"] = user[1]  # Store username as user_id
             st.sidebar.success(f"Logged in as {username}")
         else:
-            st.sidebar.error("Invalid credentials!")
+            st.sidebar.error("⚠️ Invalid credentials!")
 
+if st.session_state["user_id"] is None:
     st.stop()
 else:
-    st.sidebar.success(f"Logged in as {st.session_state['user_id']}")
+    user_id = st.session_state["user_id"]
+    st.sidebar.success(f"Logged in as {user_id}")
+    
     if st.sidebar.button("Logout"):
         st.session_state["user_id"] = None
         st.rerun()
-
-user_id = st.session_state["user_id"]
 
 # ========================= CHAT MANAGEMENT =========================
 st.sidebar.header("💬 Manage Chats")
@@ -75,7 +125,7 @@ if chat_name not in st.session_state["chats"]:
 chat_session = st.session_state["chats"][chat_name]
 messages = chat_session["messages"]
 
-# ========================= DOCUMENT UPLOAD & INTEGRATION =========================
+# ========================= FILE UPLOAD FOR RAG =========================
 st.sidebar.header("📂 Upload Documents for RAG")
 uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
 
@@ -122,12 +172,7 @@ if prompt := st.chat_input("Ask me anything..."):
         with st.chat_message("assistant"):
             response_container = st.empty()
             for chunk in rag_pipeline.stream(prompt):
-                if isinstance(chunk, str):
-                    response_text += chunk
-                elif hasattr(chunk, "text"):
-                    response_text += chunk.text
-                elif hasattr(chunk, "content"):
-                    response_text += chunk.content
+                response_text += chunk.text if hasattr(chunk, "text") else chunk
             response_container.markdown(response_text)
 
     else:
@@ -144,41 +189,15 @@ if prompt := st.chat_input("Ask me anything..."):
     tts.save("response.mp3")
     st.audio("response.mp3")
 
-# ========================= FEEDBACK SYSTEM (RLHF) =========================
+# ========================= RLHF FEEDBACK SYSTEM =========================
 st.sidebar.header("👍 RLHF Feedback")
 feedback = st.sidebar.radio("How was the response?", ["👍 Good", "👎 Bad"], index=None)
 
 if feedback:
-    conn = sqlite3.connect("chatbot_feedback.db")
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS feedback (
-            user_id TEXT,
-            timestamp DATETIME,
-            input TEXT,
-            response TEXT,
-            rating TEXT
-        )
-    """)
-    cursor.execute("INSERT INTO feedback VALUES (?, ?, ?, ?, ?)",
+    cursor.execute("INSERT INTO feedback (user_id, timestamp, input, response, rating) VALUES (?, ?, ?, ?, ?)",
                    (user_id, datetime.datetime.now().isoformat(), prompt, response_text, feedback))
     conn.commit()
-    conn.close()
     st.sidebar.success("✅ Feedback recorded!")
-
-# ========================= ANALYTICS =========================
-st.sidebar.header("📊 Analytics")
-conn = sqlite3.connect("chatbot_feedback.db")
-cursor = conn.cursor()
-cursor.execute("SELECT COUNT(*) FROM feedback WHERE rating='👍 Good'")
-positive_feedback = cursor.fetchone()[0]
-
-cursor.execute("SELECT COUNT(*) FROM feedback WHERE rating='👎 Bad'")
-negative_feedback = cursor.fetchone()[0]
-conn.close()
-
-st.sidebar.metric("👍 Positive Responses", positive_feedback)
-st.sidebar.metric("👎 Negative Responses", negative_feedback)
 
 # ========================= DELETE CHAT =========================
 if st.sidebar.button("🗑️ Delete Chat"):
