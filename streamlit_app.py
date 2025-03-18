@@ -14,6 +14,7 @@ st.title("🤖 Smart AI Chatbot (Google Gemini + RLHF)")
 conn = sqlite3.connect("chatbot.db", check_same_thread=False)
 cursor = conn.cursor()
 
+# Ensure the chat_history table exists with the necessary columns
 cursor.execute("""
     CREATE TABLE IF NOT EXISTS chat_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +22,7 @@ cursor.execute("""
         timestamp DATETIME,
         user_input TEXT,
         bot_response TEXT,
-        feedback INTEGER DEFAULT NULL
+        feedback INTEGER DEFAULT NULL  -- Ensure the feedback column exists
     )
 """)
 conn.commit()
