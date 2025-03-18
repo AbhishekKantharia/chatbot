@@ -84,9 +84,13 @@ genai.configure(api_key=GOOGLE_API_KEY)
 llm = genai.GenerativeModel("gemini-1.5-pro")
 
 # 🎯 **Save Chat History to SQLite**
+# Save chat history with ISO 8601 timestamp format
 def save_chat(user_id, user_input, bot_response):
-    cursor.execute("INSERT INTO chats (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)", 
-                   (user_id, datetime.datetime.now(), user_input, bot_response))
+    timestamp = datetime.datetime.now().isoformat()  # ✅ Fix: Convert datetime to ISO 8601 string
+    cursor.execute(
+        "INSERT INTO chats (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
+        (user_id, timestamp, user_input, bot_response)
+    )
     conn.commit()
 
 # 🎯 **Retrieve Chat History**
