@@ -1,6 +1,10 @@
 streamlit
 google-generativeai
 langchain
-langchain-google-genai
-langchain-community
-PyPDF2
+faiss-cpu
+pypdf
+docx2txt
+speechrecognition
+gtts
+matplotlib
+pdfkit
