@@ -8,3 +8,6 @@ speechrecognition
 gtts
 matplotlib
 pdfkit
+dropbox
+msal
+pydrive
