@@ -34,11 +34,21 @@ negative_feedback_count = cursor.fetchone()[0]
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
 # ========================= GOOGLE GEMINI CHATBOT FUNCTION =========================
+from langchain_community.vectorstores import FAISS  # Ensure FAISS is imported
+
 def chat_response(user_input, dynamic_prompt=None):
-    """Generate AI response using Google Gemini with adaptive prompting."""
-    llm = ChatGoogleGenerativeAI(model="gemini-pro")  # Using Gemini-Pro
-    chain = ConversationalRetrievalChain.from_llm(llm, memory=memory)
+    """ Generate AI response with conversational memory """
     
+    # Load FAISS vector store or create a new one
+    retriever = FAISS.load_local("faiss_index").as_retriever()
+
+    # Set up the conversational retrieval chain
+    chain = ConversationalRetrievalChain.from_llm(
+        llm, 
+        retriever=retriever,  # <-- Ensure retriever is passed
+        memory=memory
+    )
+
     # Apply Adaptive Prompting
     if dynamic_prompt:
         user_input = dynamic_prompt + "\n" + user_input
