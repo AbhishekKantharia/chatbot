@@ -10,3 +10,4 @@ gtts
 matplotlib
 pdfkit
 faiss-cpu
+textstat
