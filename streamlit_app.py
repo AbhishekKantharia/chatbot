@@ -13,6 +13,7 @@ import speech_recognition as sr
 from gtts import gTTS
 import matplotlib.pyplot as plt
 import pdfkit
+import socket
 
 # Configure Streamlit
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
@@ -24,16 +25,45 @@ if not GOOGLE_API_KEY:
     st.error("Google API key is missing! Set it as an environment variable.")
     st.stop()
 
+# Get user IP address for banning feature
+def get_user_ip():
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except:
+        return "Unknown"
+
+user_ip = get_user_ip()
+
+# Hardcoded list of banned IPs
+BANNED_IPS = ["192.168.1.100", "203.0.113.45"]  # Add banned IPs here
+
+if user_ip in BANNED_IPS:
+    st.error("🚫 You have been banned from using this chatbot.")
+    st.stop()
+
 # Configure Google Gemini AI
 genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# Initialize session state for multi-user chat
-user_id = st.query_params.get("user", "default")
-if user_id not in st.session_state:
-    st.session_state[user_id] = {"messages": [], "context_docs": []}
+# Sidebar: Manage Multiple Chats
+st.sidebar.header("💬 Manage Chats")
+if "chats" not in st.session_state:
+    st.session_state["chats"] = {}  # Store multiple chat sessions
 
-messages = st.session_state[user_id]["messages"]
+chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
+chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
+
+if st.sidebar.button("➕ Start New Chat"):
+    new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
+    st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
+    chat_name = new_chat_name
+
+# Initialize selected chat session
+if chat_name not in st.session_state["chats"]:
+    st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
+
+chat_session = st.session_state["chats"][chat_name]
+messages = chat_session["messages"]
 
 # Sidebar: Document Upload for RAG
 st.sidebar.header("📂 Upload Documents for RAG")
@@ -55,15 +85,15 @@ if uploaded_file:
 
     extracted_text = extract_text(uploaded_file)
     if extracted_text:
-        st.session_state[user_id]["context_docs"].append(extracted_text)
+        chat_session["context_docs"].append(extracted_text)
         st.sidebar.success("✅ Document added to chatbot knowledge!")
 
 # Process user-provided context for Retrieval-Augmented Generation (RAG)
 retriever = None
-if st.session_state[user_id]["context_docs"]:
+if chat_session["context_docs"]:
     try:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        docs = text_splitter.create_documents(st.session_state[user_id]["context_docs"])
+        docs = text_splitter.create_documents(chat_session["context_docs"])
         embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         vector_store = FAISS.from_documents(docs, embeddings)
         retriever = vector_store.as_retriever()
@@ -81,6 +111,26 @@ def generate_response(prompt, theme):
     elif theme == "Legal":
         return f"⚖️ Legal Analysis: {prompt}"
     return f"🤖 Default: {prompt}"
+
+# Display chat messages with edit & delete options
+st.subheader(f"💬 {chat_name}")
+for i, message in enumerate(messages):
+    role = message["role"]
+    content = message["content"]
+
+    with st.chat_message(role):
+        col1, col2 = st.columns([0.9, 0.1])
+        col1.markdown(content)
+        
+        if col2.button("📝", key=f"edit_{i}"):
+            new_content = st.text_area(f"Edit message {i}", content)
+            if st.button("✅ Save", key=f"save_{i}"):
+                messages[i]["content"] = new_content
+                st.experimental_rerun()
+
+        if col2.button("❌", key=f"delete_{i}"):
+            del messages[i]
+            st.experimental_rerun()
 
 # Chat Input
 if prompt := st.chat_input("Ask me anything..."):
@@ -140,25 +190,7 @@ if prompt := st.chat_input("Ask me anything..."):
     except Exception as e:
         st.error(f"❌ Audio generation error: {str(e)}")
 
-# Chat History Export
-if st.sidebar.button("📄 Download Chat as PDF"):
-    chat_history = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
-    
-    if chat_history.strip():
-        try:
-            pdfkit.from_string(chat_history, "chat.pdf")
-            with open("chat.pdf", "rb") as file:
-                st.sidebar.download_button("Download PDF", file, file_name="chat_history.pdf")
-        except Exception as e:
-            st.sidebar.error(f"❌ PDF generation error: {str(e)}")
-    else:
-        st.sidebar.warning("⚠️ Chat history is empty! No PDF generated.")
-
-# Admin Dashboard (Analytics)
-st.sidebar.header("📊 Chatbot Analytics")
-st.sidebar.metric("Total Chats", str(len(messages)))
-st.sidebar.metric("Unique Users", "1")  # Replace with dynamic user tracking
-
-fig, ax = plt.subplots()
-ax.bar(["Positive", "Neutral", "Negative"], [60, 30, 10])  # Fake sentiment analysis
-st.sidebar.pyplot(fig)
+# Delete entire chat
+if st.sidebar.button("🗑️ Delete Chat"):
+    del st.session_state["chats"][chat_name]
+    st.experimental_rerun()
