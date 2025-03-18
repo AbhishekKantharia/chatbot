@@ -1,7 +1,6 @@
 import os
 import streamlit as st
 import google.generativeai as genai
-import requests
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema.runnable import RunnableLambda
@@ -27,21 +26,6 @@ if not GOOGLE_API_KEY:
 # Configure Google Gemini AI
 genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
-
-# ======================== PERSONALIZATION ========================
-if "username" not in st.session_state:
-    st.session_state["username"] = st.text_input("Enter your name:", "")
-
-if st.session_state["username"]:
-    st.write(f"👋 Welcome back, {st.session_state['username']}!")
-
-# ======================== AI PERSONALITY SELECTION ========================
-personality = st.sidebar.selectbox("🤖 Choose AI Personality", ["Friendly", "Sarcastic", "Professional"])
-response_style = {
-    "Friendly": "Hey there! 😊 Here's what I think: ",
-    "Sarcastic": "Oh wow, what a groundbreaking question... 😏 Here's your answer: ",
-    "Professional": "According to my analysis, here’s the best response: "
-}[personality]
 
 # ======================== DOCUMENT UPLOAD (RAG) ========================
 st.sidebar.header("📂 Upload Documents for RAG")
@@ -74,22 +58,8 @@ if "messages" not in st.session_state:
 for message in st.session_state["messages"]:
     st.chat_message(message["role"], avatar="🤖" if message["role"] == "assistant" else "👤").markdown(message["content"])
 
-# ======================== USER INPUT (TEXT & VOICE) ========================
+# ======================== USER INPUT ========================
 prompt = st.chat_input("Ask me anything...")
-
-def get_voice_input():
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        st.write("🎙️ Speak now...")
-        audio = recognizer.listen(source)
-        try:
-            return recognizer.recognize_google(audio)
-        except sr.UnknownValueError:
-            return "Sorry, I couldn't understand that."
-
-if st.sidebar.button("🎤 Speak Instead"):
-    prompt = get_voice_input()
-    st.write(f"You said: {prompt}")
 
 if prompt:
     st.session_state["messages"].append({"role": "user", "content": prompt})
@@ -103,7 +73,7 @@ if prompt:
         retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
         response_text = retrieval_chain.run(prompt)
     else:
-        response_text = response_style + llm.invoke(prompt).content
+        response_text = llm.invoke(prompt).content
 
     st.session_state["messages"].append({"role": "assistant", "content": response_text})
     st.chat_message("assistant", avatar="🤖").markdown(response_text)
@@ -113,37 +83,7 @@ if prompt:
     tts.save("response.mp3")
     st.audio("response.mp3")
 
-# ======================== AI IMAGE GENERATION (Google Gemini Vision) ========================
-def generate_image(prompt):
-    response = genai.generate_content(model="gemini-1.5-vision", contents=prompt)
-    image_url = response["candidates"][0]["content"]["parts"][0]["text"]
-    st.image(image_url)
-
-if st.sidebar.button("🎨 Generate AI Art"):
-    generate_image(prompt)
-
-# ======================== LIVE WEATHER & NEWS ========================
-def get_weather(city):
-    api_key = "your_openweather_api_key"
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
-    response = requests.get(url).json()
-    return f"🌡️ {response['main']['temp']}°C, {response['weather'][0]['description']}"
-
-if st.sidebar.button("🌍 Get Weather"):
-    st.write(get_weather("New York"))
-
-def get_news():
-    url = "https://newsapi.org/v2/top-headlines?country=us&apiKey=your_newsapi_key"
-    response = requests.get(url).json()
-    return response["articles"][0]["title"]
-
-if st.sidebar.button("📰 Get Latest News"):
-    st.write(get_news())
-
-# ======================== CHAT STATS & DELETE CHAT ========================
-st.sidebar.subheader("📊 Chat Stats")
-st.sidebar.write(f"Total Messages: {len(st.session_state['messages'])}")
-
+# ======================== DELETE CHAT ========================
 if st.sidebar.button("🗑️ Delete Chat"):
     st.session_state["messages"] = []
-    st.rerun()
+    st.experimental_rerun()
