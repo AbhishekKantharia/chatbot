@@ -34,9 +34,6 @@ if not GOOGLE_API_KEY:
 
 genai.configure(api_key=GOOGLE_API_KEY)
 
-import faiss
-print(faiss.__version__)
-
 # ------------------ 🆔 Multi-User Support ------------------
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = str(uuid.uuid4())
