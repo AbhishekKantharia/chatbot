@@ -87,18 +87,25 @@ genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
 # ========================= MULTIPLE CHAT SESSIONS =========================
+# Sidebar: Manage Multiple Chats
 st.sidebar.header("💬 Manage Chats")
 if "chats" not in st.session_state:
-    st.session_state["chats"] = {}
+    st.session_state["chats"] = {}  # Store multiple chat sessions
 
-chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
+chat_list = list(st.session_state["chats"].keys())
+
+# Ensure "New Chat" is always an option
+chat_list.append("New Chat")
+
 chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
 
-if st.sidebar.button("➕ Start New Chat"):
+# If user selects "New Chat", create a new session
+if chat_name == "New Chat" or chat_name not in st.session_state["chats"]:
     new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
     st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
-    chat_name = new_chat_name
+    chat_name = new_chat_name  # Set the newly created chat as active
 
+# Initialize selected chat session
 chat_session = st.session_state["chats"][chat_name]
 messages = chat_session["messages"]
 
