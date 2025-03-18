@@ -79,7 +79,8 @@ if uploaded_file:
             return ""
     extracted_text = extract_text(uploaded_file)
     if extracted_text:
-        chat_session["context_docs"].append(extracted_text)
+        if chat_name not in st.session_state["chats"]:
+            st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
         st.sidebar.success("✅ Document added to chatbot knowledge!")
 
 # =========================== RETRIEVAL-AUGMENTED GENERATION (RAG) =========================== #
