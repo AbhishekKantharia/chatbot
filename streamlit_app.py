@@ -2,13 +2,6 @@ import os
 import sqlite3
 import streamlit as st
 import google.generativeai as genai
-from langchain.memory import ConversationBufferMemory
-from langchain.chains import ConversationalRetrievalChain
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from PyPDF2 import PdfReader
-import docx2txt
 from gtts import gTTS
 import datetime
 import matplotlib.pyplot as plt
@@ -44,20 +37,23 @@ st.title("🤖 Smart AI Chatbot")
 # 🎯 **User Authentication**
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
+if "username" not in st.session_state:
+    st.session_state["username"] = ""
 
 if not st.session_state["user_id"]:
     st.sidebar.header("🔐 Login / Register")
     auth_option = st.sidebar.radio("Select Option", ["Login", "Register"])
-    username = st.sidebar.text_input("Username")
-    password = st.sidebar.text_input("Password", type="password")
+    username = st.sidebar.text_input("Username", key="username_input")
+    password = st.sidebar.text_input("Password", type="password", key="password_input")
 
     if auth_option == "Login":
         if st.sidebar.button("Login"):
-            cursor.execute("SELECT id FROM users WHERE username = ? AND password = ?", (username, password))
+            cursor.execute("SELECT id, username FROM users WHERE username = ? AND password = ?", (username, password))
             user = cursor.fetchone()
             if user:
                 st.session_state["user_id"] = user[0]
-                st.experimental_rerun()
+                st.session_state["username"] = user[1]
+                st.rerun()  # ✅ FIXED: `st.experimental_rerun()` replaced with `st.rerun()`
             else:
                 st.sidebar.error("Invalid credentials.")
 
@@ -66,21 +62,26 @@ if not st.session_state["user_id"]:
             try:
                 cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
                 conn.commit()
-                st.sidebar.success("Account created! Please log in.")
-                st.experimental_rerun()
+                st.sidebar.success("✅ Account created! Please log in.")
+                st.rerun()
             except sqlite3.IntegrityError:
-                st.sidebar.error("Username already exists.")
+                st.sidebar.error("🚫 Username already exists.")
 
 else:
-    st.sidebar.success(f"Logged in as {username}")
+    st.sidebar.success(f"Logged in as {st.session_state['username']}")
     if st.sidebar.button("Logout"):
         st.session_state["user_id"] = None
-        st.experimental_rerun()
+        st.session_state["username"] = ""
+        st.rerun()  # ✅ FIXED: Using `st.rerun()` instead of `st.experimental_rerun()`
 
 # 🎯 **Google AI Configuration**
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+if not GOOGLE_API_KEY:
+    st.error("Google API Key is missing! Set it as an environment variable.")
+    st.stop()
+
 genai.configure(api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+llm = genai.GenerativeModel("gemini-1.5-pro")
 
 # 🎯 **Save Chat History to SQLite**
 def save_chat(user_id, user_input, bot_response):
@@ -91,17 +92,9 @@ def save_chat(user_id, user_input, bot_response):
 # 🎯 **Retrieve Chat History**
 def get_chat_history(user_id):
     cursor.execute("SELECT user_input, bot_response FROM chats WHERE user_id = ? ORDER BY timestamp", (user_id,))
-    return [{"role": "user", "content": row[0]} for row in cursor.fetchall()] + \
-           [{"role": "assistant", "content": row[1]} for row in cursor.fetchall()]
-
-# 🎯 **Sentiment Analysis**
-def analyze_sentiment(text):
-    if "good" in text or "happy" in text:
-        return "Positive"
-    elif "bad" in text or "sad" in text:
-        return "Negative"
-    else:
-        return "Neutral"
+    chats = cursor.fetchall()
+    return [{"role": "user", "content": row[0]} for row in chats] + \
+           [{"role": "assistant", "content": row[1]} for row in chats]
 
 # 🎯 **Chat Interface**
 if st.session_state["user_id"]:
@@ -117,8 +110,8 @@ if st.session_state["user_id"]:
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        response = llm.invoke(prompt)
-        response_text = response.content if response else "I couldn't generate a response."
+        response = llm.generate_content(prompt)
+        response_text = response.text if response else "I couldn't generate a response."
 
         with st.chat_message("assistant"):
             st.markdown(response_text)
@@ -138,15 +131,10 @@ if st.session_state["user_id"]:
 if st.session_state["user_id"]:
     st.sidebar.header("📊 Analytics")
     messages = get_chat_history(st.session_state["user_id"])
-    total_chats = len(messages)
-    positive_count = sum(1 for m in messages if analyze_sentiment(m["content"]) == "Positive")
-    negative_count = sum(1 for m in messages if analyze_sentiment(m["content"]) == "Negative")
-    neutral_count = total_chats - (positive_count + negative_count)
+    total_chats = len(messages) // 2  # Since each interaction has user & bot response
 
     st.sidebar.metric("Total Chats", total_chats)
-    st.sidebar.metric("Positive Responses", positive_count)
-    st.sidebar.metric("Negative Responses", negative_count)
 
     fig, ax = plt.subplots()
-    ax.bar(["Positive", "Neutral", "Negative"], [positive_count, neutral_count, negative_count])
+    ax.bar(["Total Chats"], [total_chats])
     st.sidebar.pyplot(fig)
