@@ -13,15 +13,12 @@ import datetime
 st.set_page_config(page_title="AI Chatbot with RLHF", page_icon="🤖", layout="wide")
 st.title("🤖 AI Chatbot with RLHF & Automated Fine-Tuning")
 
-# Fetch API Key
+# Configure Google Gemini AI
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    st.error("Google API key is missing! Set it as an environment variable.")
-    st.stop()
-
-# Setup AI Model
 genai.configure(api_key=GOOGLE_API_KEY)
-llm = genai.GenerativeModel(model="gemini-1.5-pro")
+
+# ✅ Correct model initialization
+llm = genai.GenerativeModel("gemini-1.5-pro")
 
 # Database Setup
 conn = sqlite3.connect("chat_feedback.db", check_same_thread=False)
