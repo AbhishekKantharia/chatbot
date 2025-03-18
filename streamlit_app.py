@@ -1,6 +1,8 @@
 import os
 import streamlit as st
 import google.generativeai as genai
+import openai
+import requests
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema.runnable import RunnableLambda
@@ -11,12 +13,10 @@ from PyPDF2 import PdfReader
 import docx2txt
 import speech_recognition as sr
 from gtts import gTTS
-import matplotlib.pyplot as plt
-import pdfkit
 import socket
 
-# Configure Streamlit
-st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
+# ======================== CONFIGURE STREAMLIT ========================
+st.set_page_config(page_title="AI Chatbot", page_icon="🤖", layout="wide")
 st.title("🤖 Smart AI Chatbot")
 
 # Fetch Google API key
@@ -33,9 +33,7 @@ def get_user_ip():
         return "Unknown"
 
 user_ip = get_user_ip()
-
-# Hardcoded list of banned IPs
-BANNED_IPS = ["192.168.1.100", "203.0.113.45"]  # Add banned IPs here
+BANNED_IPS = ["192.168.1.100", "203.0.113.45"]
 
 if user_ip in BANNED_IPS:
     st.error("🚫 You have been banned from using this chatbot.")
@@ -45,152 +43,121 @@ if user_ip in BANNED_IPS:
 genai.configure(api_key=GOOGLE_API_KEY)
 llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# Sidebar: Manage Multiple Chats
-st.sidebar.header("💬 Manage Chats")
-if "chats" not in st.session_state:
-    st.session_state["chats"] = {}  # Store multiple chat sessions
+# ======================== PERSONALIZATION ========================
+if "username" not in st.session_state:
+    st.session_state["username"] = st.text_input("Enter your name:", "")
 
-chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
-chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
+if st.session_state["username"]:
+    st.write(f"👋 Welcome back, {st.session_state['username']}!")
 
-if st.sidebar.button("➕ Start New Chat"):
-    new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
-    st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
-    chat_name = new_chat_name
+# ======================== AI PERSONALITY SELECTION ========================
+personality = st.sidebar.selectbox("🤖 Choose AI Personality", ["Friendly", "Sarcastic", "Professional"])
+response_style = {
+    "Friendly": "Hey there! 😊 Here's what I think: ",
+    "Sarcastic": "Oh wow, what a groundbreaking question... 😏 Here's your answer: ",
+    "Professional": "According to my analysis, here’s the best response: "
+}[personality]
 
-# Initialize selected chat session
-if chat_name not in st.session_state["chats"]:
-    st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
-
-chat_session = st.session_state["chats"][chat_name]
-messages = chat_session["messages"]
-
-# Sidebar: Document Upload for RAG
+# ======================== DOCUMENT UPLOAD (RAG) ========================
 st.sidebar.header("📂 Upload Documents for RAG")
 uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
 
-if uploaded_file:
-    def extract_text(file):
-        try:
-            if file.name.endswith(".pdf"):
-                reader = PdfReader(file)
-                return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
-            elif file.name.endswith(".docx"):
-                return docx2txt.process(file)
-            else:
-                return file.read().decode("utf-8")
-        except Exception as e:
-            st.sidebar.error(f"Error processing file: {str(e)}")
-            return ""
+def extract_text(file):
+    if file.name.endswith(".pdf"):
+        reader = PdfReader(file)
+        return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+    elif file.name.endswith(".docx"):
+        return docx2txt.process(file)
+    else:
+        return file.read().decode("utf-8")
 
-    extracted_text = extract_text(uploaded_file)
-    if extracted_text:
-        chat_session["context_docs"].append(extracted_text)
-        st.sidebar.success("✅ Document added to chatbot knowledge!")
-
-# Process user-provided context for Retrieval-Augmented Generation (RAG)
 retriever = None
-if chat_session["context_docs"]:
-    try:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        docs = text_splitter.create_documents(chat_session["context_docs"])
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        vector_store = FAISS.from_documents(docs, embeddings)
-        retriever = vector_store.as_retriever()
-    except Exception as e:
-        st.sidebar.error(f"❌ Error setting up RAG: {str(e)}")
+if uploaded_file:
+    extracted_text = extract_text(uploaded_file)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+    docs = text_splitter.create_documents([extracted_text])
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    vector_store = FAISS.from_documents(docs, embeddings)
+    retriever = vector_store.as_retriever()
+    st.sidebar.success("✅ Document added to chatbot knowledge!")
 
-# Thematic chatbot selection
-theme = st.sidebar.selectbox("🎨 Choose Chatbot Theme", ["Default", "Business", "Casual", "Legal"])
+# ======================== DISPLAY CHAT MESSAGES ========================
+st.subheader("💬 Chat")
+if "messages" not in st.session_state:
+    st.session_state["messages"] = []
 
-def generate_response(prompt, theme):
-    if theme == "Business":
-        return f"📊 Professional Response: {prompt}"
-    elif theme == "Casual":
-        return f"😎 Chill Response: {prompt}"
-    elif theme == "Legal":
-        return f"⚖️ Legal Analysis: {prompt}"
-    return f"🤖 Default: {prompt}"
+for message in st.session_state["messages"]:
+    st.chat_message(message["role"], avatar="🤖" if message["role"] == "assistant" else "👤").markdown(message["content"])
 
-# Display chat messages with edit & delete options
-st.subheader(f"💬 {chat_name}")
-for i, message in enumerate(messages):
-    role = message["role"]
-    content = message["content"]
+# ======================== USER INPUT (TEXT & VOICE) ========================
+prompt = st.chat_input("Ask me anything...")
 
-    with st.chat_message(role):
-        col1, col2 = st.columns([0.9, 0.1])
-        col1.markdown(content)
-        
-        if col2.button("📝", key=f"edit_{i}"):
-            new_content = st.text_area(f"Edit message {i}", content)
-            if st.button("✅ Save", key=f"save_{i}"):
-                messages[i]["content"] = new_content
-                st.rerun()
+def get_voice_input():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.write("🎙️ Speak now...")
+        audio = recognizer.listen(source)
+        try:
+            return recognizer.recognize_google(audio)
+        except sr.UnknownValueError:
+            return "Sorry, I couldn't understand that."
 
-        if col2.button("❌", key=f"delete_{i}"):
-            del messages[i]
-            st.rerun()
+if st.sidebar.button("🎤 Speak Instead"):
+    prompt = get_voice_input()
+    st.write(f"You said: {prompt}")
 
-# Chat Input
-if prompt := st.chat_input("Ask me anything..."):
-    messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+if prompt:
+    st.session_state["messages"].append({"role": "user", "content": prompt})
+    st.chat_message("user", avatar="👤").markdown(prompt)
 
-    response_text = ""  # Ensure response_text is initialized
+    response_text = ""
 
     # Use RAG if context is available, else only AI
     if retriever:
-        try:
-            memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-            retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
-
-            def process_input(input_text):
-                return retrieval_chain.invoke(input_text)
-
-            rag_pipeline = RunnableLambda(process_input)
-
-            with st.chat_message("assistant"):
-                response_container = st.empty()
-
-                for chunk in rag_pipeline.stream(prompt):
-                    if isinstance(chunk, str):
-                        response_text += chunk
-                    elif hasattr(chunk, "text"):
-                        response_text += chunk.text
-                    elif hasattr(chunk, "content"):
-                        response_text += chunk.content
-
-                response_container.markdown(response_text)
-
-        except Exception as e:
-            st.error(f"❌ Error processing response: {str(e)}")
-            response_text = "I encountered an error while generating a response."
-
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
+        response_text = retrieval_chain.run(prompt)
     else:
-        try:
-            response = llm.invoke(prompt)
-            response_text = response.content if response else "I couldn't generate a response."
+        response_text = response_style + llm.invoke(prompt).content
 
-            with st.chat_message("assistant"):
-                st.markdown(response_text)
-        except Exception as e:
-            st.error(f"❌ AI Error: {str(e)}")
-            response_text = "I encountered an error while generating a response."
+    st.session_state["messages"].append({"role": "assistant", "content": response_text})
+    st.chat_message("assistant", avatar="🤖").markdown(response_text)
 
-    # Store assistant response
-    messages.append({"role": "assistant", "content": response_text})
+    # Convert response to speech
+    tts = gTTS(response_text, lang="en")
+    tts.save("response.mp3")
+    st.audio("response.mp3")
 
-    # Generate improved voice response
-    try:
-        tts = gTTS(response_text, lang="en")
-        tts.save("response.mp3")
-        st.audio("response.mp3")
-    except Exception as e:
-        st.error(f"❌ Audio generation error: {str(e)}")
+# ======================== AI IMAGE GENERATION ========================
+def generate_image(prompt):
+    response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
+    st.image(response['data'][0]['url'])
 
-# Delete entire chat
+if st.sidebar.button("🎨 Generate AI Art"):
+    generate_image(prompt)
+
+# ======================== LIVE WEATHER & NEWS ========================
+def get_weather(city):
+    api_key = "your_openweather_api_key"
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric"
+    response = requests.get(url).json()
+    return f"🌡️ {response['main']['temp']}°C, {response['weather'][0]['description']}"
+
+if st.sidebar.button("🌍 Get Weather"):
+    st.write(get_weather("New York"))
+
+def get_news():
+    url = "https://newsapi.org/v2/top-headlines?country=us&apiKey=your_newsapi_key"
+    response = requests.get(url).json()
+    return response["articles"][0]["title"]
+
+if st.sidebar.button("📰 Get Latest News"):
+    st.write(get_news())
+
+# ======================== CHAT STATS & DELETE CHAT ========================
+st.sidebar.subheader("📊 Chat Stats")
+st.sidebar.write(f"Total Messages: {len(st.session_state['messages'])}")
+
 if st.sidebar.button("🗑️ Delete Chat"):
-    del st.session_state["chats"][chat_name]
+    st.session_state["messages"] = []
     st.rerun()
