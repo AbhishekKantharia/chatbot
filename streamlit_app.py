@@ -140,7 +140,7 @@ easter_eggs = {
     "open the pod bay doors": "I’m sorry, Dave. I’m afraid I can’t do that. 🚀"
 }
 
-if input_text.lower() in easter_eggs:
+if input_text and input_text.lower() in easter_eggs:
     with st.chat_message("assistant"):
         st.markdown(easter_eggs[input_text.lower()])
 
