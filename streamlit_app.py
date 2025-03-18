@@ -1,188 +1,160 @@
 import os
 import streamlit as st
+import firebase_admin
+from firebase_admin import auth, credentials, firestore
 import google.generativeai as genai
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from langchain.schema.runnable import RunnableLambda
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from PyPDF2 import PdfReader
 import docx2txt
-import speech_recognition as sr
 from gtts import gTTS
-import matplotlib.pyplot as plt
 import pdfkit
 import socket
+import datetime
+import matplotlib.pyplot as plt
+import fastapi
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 
-# Configure Streamlit
+# 🎯 **Firebase Authentication Setup**
+cred = credentials.Certificate("firebase_credentials.json")  # Ensure this is set up in Firebase
+firebase_admin.initialize_app(cred)
+db = firestore.client()
+
+# 🎯 **FastAPI Backend**
+app = fastapi.FastAPI()
+
+# Allow CORS (for frontend to communicate with backend)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 📌 **Streamlit UI Configuration**
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
 st.title("🤖 Smart AI Chatbot")
 
-# Fetch Google API key
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-if not GOOGLE_API_KEY:
-    st.error("Google API key is missing! Set it as an environment variable.")
-    st.stop()
+# 🎯 **Authentication Functions**
+def authenticate_user(email, password):
+    try:
+        user = auth.get_user_by_email(email)
+        return user.uid
+    except:
+        return None
 
-# Get user IP address for banning feature
+def register_user(email, password):
+    try:
+        user = auth.create_user(email=email, password=password)
+        return user.uid
+    except Exception as e:
+        st.error(f"Registration failed: {e}")
+        return None
+
+# 🎯 **User Login**
+if "user" not in st.session_state:
+    st.session_state["user"] = None
+
+if not st.session_state["user"]:
+    st.sidebar.header("🔐 Login / Register")
+    auth_option = st.sidebar.radio("Select Option", ["Login", "Register"])
+    email = st.sidebar.text_input("Email")
+    password = st.sidebar.text_input("Password", type="password")
+    
+    if auth_option == "Login":
+        if st.sidebar.button("Login"):
+            user_id = authenticate_user(email, password)
+            if user_id:
+                st.session_state["user"] = user_id
+                st.experimental_rerun()
+            else:
+                st.sidebar.error("Invalid login credentials.")
+
+    elif auth_option == "Register":
+        if st.sidebar.button("Register"):
+            user_id = register_user(email, password)
+            if user_id:
+                st.session_state["user"] = user_id
+                st.sidebar.success("Account created! Please log in.")
+                st.experimental_rerun()
+else:
+    st.sidebar.success(f"Logged in as {st.session_state['user']}")
+    if st.sidebar.button("Logout"):
+        st.session_state["user"] = None
+        st.experimental_rerun()
+
+# 🎯 **Google AI Configuration**
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+genai.configure(api_key=GOOGLE_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+
+# 🎯 **Analytics Tracking**
+def log_chat(user_id, user_input, bot_response):
+    doc_ref = db.collection("chats").document(user_id).collection("messages").document()
+    doc_ref.set({
+        "timestamp": datetime.datetime.now(),
+        "user_input": user_input,
+        "bot_response": bot_response
+    })
+
+# 🎯 **Retrieve Chat History**
+def get_chat_history(user_id):
+    chat_ref = db.collection("chats").document(user_id).collection("messages")
+    chat_history = chat_ref.order_by("timestamp").stream()
+    return [{"role": "user", "content": doc.to_dict()["user_input"]} for doc in chat_history] + \
+           [{"role": "assistant", "content": doc.to_dict()["bot_response"]} for doc in chat_history]
+
+# 🎯 **Sentiment Analysis (Basic)**
+def analyze_sentiment(text):
+    if "good" in text or "happy" in text:
+        return "Positive"
+    elif "bad" in text or "sad" in text:
+        return "Negative"
+    else:
+        return "Neutral"
+
+# 🎯 **IP Address Banning**
 def get_user_ip():
     try:
         return socket.gethostbyname(socket.gethostname())
     except:
         return "Unknown"
 
+BANNED_IPS = ["192.168.1.100", "203.0.113.45"]
 user_ip = get_user_ip()
-
-# Hardcoded list of banned IPs
-BANNED_IPS = ["192.168.1.100", "203.0.113.45"]  # Add banned IPs here
-
 if user_ip in BANNED_IPS:
     st.error("🚫 You have been banned from using this chatbot.")
     st.stop()
 
-# Configure Google Gemini AI
-genai.configure(api_key=GOOGLE_API_KEY)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
+# 🎯 **Chat Interface**
+messages = get_chat_history(st.session_state["user"]) if st.session_state["user"] else []
+st.subheader("💬 Chat")
 
-# Sidebar: Manage Multiple Chats
-st.sidebar.header("💬 Manage Chats")
-if "chats" not in st.session_state:
-    st.session_state["chats"] = {}  # Store multiple chat sessions
+for message in messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
 
-chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
-chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
-
-if st.sidebar.button("➕ Start New Chat"):
-    new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
-    st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
-    chat_name = new_chat_name
-
-# Initialize selected chat session
-if chat_name not in st.session_state["chats"]:
-    st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
-
-chat_session = st.session_state["chats"][chat_name]
-messages = chat_session["messages"]
-
-# Sidebar: Document Upload for RAG
-st.sidebar.header("📂 Upload Documents for RAG")
-uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
-
-if uploaded_file:
-    def extract_text(file):
-        try:
-            if file.name.endswith(".pdf"):
-                reader = PdfReader(file)
-                return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
-            elif file.name.endswith(".docx"):
-                return docx2txt.process(file)
-            else:
-                return file.read().decode("utf-8")
-        except Exception as e:
-            st.sidebar.error(f"Error processing file: {str(e)}")
-            return ""
-
-    extracted_text = extract_text(uploaded_file)
-    if extracted_text:
-        chat_session["context_docs"].append(extracted_text)
-        st.sidebar.success("✅ Document added to chatbot knowledge!")
-
-# Process user-provided context for Retrieval-Augmented Generation (RAG)
-retriever = None
-if chat_session["context_docs"]:
-    try:
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        docs = text_splitter.create_documents(chat_session["context_docs"])
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        vector_store = FAISS.from_documents(docs, embeddings)
-        retriever = vector_store.as_retriever()
-    except Exception as e:
-        st.sidebar.error(f"❌ Error setting up RAG: {str(e)}")
-
-# Thematic chatbot selection
-theme = st.sidebar.selectbox("🎨 Choose Chatbot Theme", ["Default", "Business", "Casual", "Legal"])
-
-def generate_response(prompt, theme):
-    if theme == "Business":
-        return f"📊 Professional Response: {prompt}"
-    elif theme == "Casual":
-        return f"😎 Chill Response: {prompt}"
-    elif theme == "Legal":
-        return f"⚖️ Legal Analysis: {prompt}"
-    return f"🤖 Default: {prompt}"
-
-# Display chat messages with edit & delete options
-st.subheader(f"💬 {chat_name}")
-for i, message in enumerate(messages):
-    role = message["role"]
-    content = message["content"]
-
-    with st.chat_message(role):
-        col1, col2 = st.columns([0.9, 0.1])
-        col1.markdown(content)
-        
-        if col2.button("📝", key=f"edit_{i}"):
-            new_content = st.text_area(f"Edit message {i}", content)
-            if st.button("✅ Save", key=f"save_{i}"):
-                messages[i]["content"] = new_content
-                st.rerun()
-
-        if col2.button("❌", key=f"delete_{i}"):
-            del messages[i]
-            st.rerun()
-
-# Chat Input
 if prompt := st.chat_input("Ask me anything..."):
     messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    response_text = ""  # Ensure response_text is initialized
+    response_text = ""
+    response = llm.invoke(prompt)
+    response_text = response.content if response else "I couldn't generate a response."
 
-    # Use RAG if context is available, else only AI
-    if retriever:
-        try:
-            memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-            retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
+    with st.chat_message("assistant"):
+        st.markdown(response_text)
 
-            def process_input(input_text):
-                return retrieval_chain.invoke(input_text)
+    # Store chat in Firebase
+    log_chat(st.session_state["user"], prompt, response_text)
 
-            rag_pipeline = RunnableLambda(process_input)
-
-            with st.chat_message("assistant"):
-                response_container = st.empty()
-
-                for chunk in rag_pipeline.stream(prompt):
-                    if isinstance(chunk, str):
-                        response_text += chunk
-                    elif hasattr(chunk, "text"):
-                        response_text += chunk.text
-                    elif hasattr(chunk, "content"):
-                        response_text += chunk.content
-
-                response_container.markdown(response_text)
-
-        except Exception as e:
-            st.error(f"❌ Error processing response: {str(e)}")
-            response_text = "I encountered an error while generating a response."
-
-    else:
-        try:
-            response = llm.invoke(prompt)
-            response_text = response.content if response else "I couldn't generate a response."
-
-            with st.chat_message("assistant"):
-                st.markdown(response_text)
-        except Exception as e:
-            st.error(f"❌ AI Error: {str(e)}")
-            response_text = "I encountered an error while generating a response."
-
-    # Store assistant response
-    messages.append({"role": "assistant", "content": response_text})
-
-    # Generate improved voice response
+    # 🎯 **Audio Response**
     try:
         tts = gTTS(response_text, lang="en")
         tts.save("response.mp3")
@@ -190,7 +162,37 @@ if prompt := st.chat_input("Ask me anything..."):
     except Exception as e:
         st.error(f"❌ Audio generation error: {str(e)}")
 
-# Delete entire chat
-if st.sidebar.button("🗑️ Delete Chat"):
-    del st.session_state["chats"][chat_name]
-    st.rerun()
+# 🎯 **Advanced Analytics**
+st.sidebar.header("📊 Analytics")
+total_chats = len(messages)
+positive_count = sum(1 for m in messages if analyze_sentiment(m["content"]) == "Positive")
+negative_count = sum(1 for m in messages if analyze_sentiment(m["content"]) == "Negative")
+neutral_count = total_chats - (positive_count + negative_count)
+
+st.sidebar.metric("Total Chats", total_chats)
+st.sidebar.metric("Positive Responses", positive_count)
+st.sidebar.metric("Negative Responses", negative_count)
+
+# 🎯 **Graph Visualization**
+fig, ax = plt.subplots()
+ax.bar(["Positive", "Neutral", "Negative"], [positive_count, neutral_count, negative_count])
+st.sidebar.pyplot(fig)
+
+# 🎯 **Deployment with FastAPI**
+@app.get("/")
+def home():
+    return JSONResponse(content={"message": "AI Chatbot API is running!"})
+
+@app.get("/health")
+def health_check():
+    return JSONResponse(content={"status": "OK"})
+
+@app.post("/chat")
+async def chat_api(data: dict):
+    user_input = data.get("user_input", "")
+    response = llm.invoke(user_input)
+    return JSONResponse(content={"bot_response": response.content if response else "Error generating response."})
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
