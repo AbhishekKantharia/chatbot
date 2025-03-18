@@ -84,7 +84,8 @@ if uploaded_file:
 
 # =========================== RETRIEVAL-AUGMENTED GENERATION (RAG) =========================== #
 retriever = None
-if chat_session["context_docs"]:
+if chat_name not in st.session_state["chats"]:
+    st.session_state["chats"][chat_name] = {"messages": [], "context_docs": []}
     try:
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
         docs = text_splitter.create_documents(chat_session["context_docs"])
