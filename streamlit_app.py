@@ -1,184 +1,122 @@
 import os
-import uuid
 import streamlit as st
 import google.generativeai as genai
-from PyPDF2 import PdfReader
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
 from langchain.schema.runnable import RunnableLambda
-import google.generativeai as genai
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from PyPDF2 import PdfReader
+import docx2txt
+import speech_recognition as sr
+from gtts import gTTS
+import matplotlib.pyplot as plt
+import pdfkit
 
-genai.configure(api_key="your-api-key-here")
+# Configure Streamlit
+st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
+st.title("🤖 Smart AI Chatbot")
 
-try:
-    model = genai.GenerativeModel("gemini-1.5-pro")
-    response = model.generate_content("Hello, how are you?")
-    print(response.text)
-except Exception as e:
-    print(f"API Error: {e}")
-
-# ------------------ 🏗️ Streamlit Page Setup ------------------
-st.set_page_config(page_title="AI Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 AI Chatbot with Context & Multi-User Support")
-
-# ------------------ 🔑 API Key Handling ------------------
+# Fetch Google API key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
-    GOOGLE_API_KEY = st.sidebar.text_input("Enter Google AI API Key:", type="password")
-    if not GOOGLE_API_KEY:
-        st.sidebar.error("API key required!")
-        st.stop()
+    st.error("Google API key is missing! Set it as an environment variable.")
+    st.stop()
 
+# Configure Google Gemini AI
 genai.configure(api_key=GOOGLE_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# ------------------ 🆔 Multi-User Support ------------------
-if "user_id" not in st.session_state:
-    st.session_state["user_id"] = str(uuid.uuid4())
+# Initialize session state for multi-user chat
+user_id = st.experimental_get_query_params().get("user", ["default"])[0]
+if user_id not in st.session_state:
+    st.session_state[user_id] = {"messages": [], "context_docs": []}
 
-user_id = st.session_state["user_id"]
+messages = st.session_state[user_id]["messages"]
 
-if "messages" not in st.session_state:
-    st.session_state.messages = {}
+# Sidebar options
+st.sidebar.header("📂 Upload Documents for RAG")
+uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, or TXT", type=["pdf", "docx", "txt"])
 
-if user_id not in st.session_state.messages:
-    st.session_state.messages[user_id] = []
+if uploaded_file:
+    def extract_text(file):
+        if file.name.endswith(".pdf"):
+            reader = PdfReader(file)
+            return " ".join([page.extract_text() for page in reader.pages if page.extract_text()])
+        elif file.name.endswith(".docx"):
+            return docx2txt.process(file)
+        else:
+            return file.read().decode("utf-8")
 
-if "memory" not in st.session_state:
-    st.session_state.memory = {}
+    extracted_text = extract_text(uploaded_file)
+    st.session_state[user_id]["context_docs"].append(extracted_text)
+    st.sidebar.success("Document added to chatbot knowledge!")
 
-if user_id not in st.session_state.memory:
-    st.session_state.memory[user_id] = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-
-if "context_docs" not in st.session_state:
-    st.session_state.context_docs = {}
-
-if user_id not in st.session_state.context_docs:
-    st.session_state.context_docs[user_id] = []
-
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = {}
-
-# ------------------ 🎭 Chatbot Theme Selection ------------------
-st.sidebar.subheader("🤖 Choose Chatbot Mode")
-chatbot_mode = st.sidebar.radio(
-    "Select a theme",
-    ["General AI", "Customer Support", "HR Assistant", "Finance Assistant"]
-)
-
-mode_prompts = {
-    "General AI": "You are a helpful AI assistant.",
-    "Customer Support": "You are a customer service agent. Help users with inquiries professionally.",
-    "HR Assistant": "You are an HR assistant, helping with policies, onboarding, and HR queries.",
-    "Finance Assistant": "You are a finance expert. Help users with financial queries, budgeting, and reports."
-}
-
-system_prompt = mode_prompts[chatbot_mode]
-
-# Initialize LLM with theme-based behavior
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7, system=system_prompt)
-
-# ------------------ 📂 File Upload for Document-Based RAG ------------------
-st.sidebar.subheader("📂 Upload Documents")
-
-uploaded_files = st.sidebar.file_uploader(
-    "Upload PDFs, DOCX, or TXT files",
-    type=["pdf", "txt", "docx"],
-    accept_multiple_files=True,
-)
-
-def process_file(file):
-    """Extract text from uploaded files."""
-    if file.type == "application/pdf":
-        pdf_reader = PdfReader(file)
-        text = "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
-    elif file.type == "text/plain":
-        text = file.getvalue().decode("utf-8")
-    elif file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        text = file.getvalue().decode("utf-8")  # Simplified DOCX processing
-    else:
-        text = None
-    return text
-
-if uploaded_files:
-    extracted_texts = [process_file(file) for file in uploaded_files if process_file(file)]
-    st.session_state.context_docs[user_id].extend(extracted_texts)
-    st.sidebar.success("Documents processed and added to knowledge base!")
-    st.rerun()
-
-# ------------------ 📚 Context Management ------------------
-st.sidebar.header("📚 Add Context")
-context_input = st.sidebar.text_area("Enter additional context (e.g., policies, product details)")
-
-if st.sidebar.button("Add Context"):
-    if context_input:
-        st.session_state.context_docs[user_id].append(context_input)
-        st.sidebar.success("Context added successfully!")
-        st.rerun()
-
-# Show existing context
-st.sidebar.subheader("📄 Current Context")
-for i, doc in enumerate(st.session_state.context_docs[user_id]):
-    st.sidebar.text(f"{i+1}. {doc[:50]}...")
-    if st.sidebar.button(f"Remove {i+1}", key=f"remove_{i}"):
-        del st.session_state.context_docs[user_id][i]
-        st.sidebar.success("Context removed!")
-        st.rerun()
-
-# ------------------ 🔍 RAG (Retrieval-Augmented Generation) ------------------
-if st.session_state.context_docs[user_id]:
+# Process user-provided context
+if st.session_state[user_id]["context_docs"]:
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    docs = text_splitter.create_documents(st.session_state.context_docs[user_id])
+    docs = text_splitter.create_documents(st.session_state[user_id]["context_docs"])
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-
-    if user_id not in st.session_state.vector_store or st.session_state.vector_store[user_id] is None:
-        st.session_state.vector_store[user_id] = FAISS.from_documents(docs, embeddings)
-    else:
-        st.session_state.vector_store[user_id].add_documents(docs)
-
-    retriever = st.session_state.vector_store[user_id].as_retriever()
+    vector_store = FAISS.from_documents(docs, embeddings)
+    retriever = vector_store.as_retriever()
 else:
-    retriever = None  # No context provided
+    retriever = None
 
-# ------------------ 💬 Chat Interface ------------------
-st.subheader("Chat")
+# Thematic chatbot selection
+theme = st.sidebar.selectbox("🎨 Choose Chatbot Theme", ["Default", "Business", "Casual", "Legal"])
+def generate_response(prompt, theme):
+    if theme == "Business":
+        return f"📊 Professional Response: {prompt}"
+    elif theme == "Casual":
+        return f"😎 Chill Response: {prompt}"
+    elif theme == "Legal":
+        return f"⚖️ Legal Analysis: {prompt}"
+    return f"🤖 Default: {prompt}"
 
-# Display chat history
-for message in st.session_state.messages[user_id]:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+# Voice Input & Output
+st.sidebar.header("🎤 Voice Input & Output")
+if st.sidebar.button("🎙️ Speak"):
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.sidebar.info("Listening...")
+        audio = recognizer.listen(source)
+    try:
+        voice_prompt = recognizer.recognize_google(audio)
+        st.sidebar.write(f"**You said:** {voice_prompt}")
+    except:
+        st.sidebar.error("Could not recognize speech!")
 
-# Handle user input
+# Chat Input
 if prompt := st.chat_input("Ask me anything..."):
-    prompt = prompt.strip()
-    if not prompt:
-        st.warning("Please enter a valid question!")
-        st.stop()
-
-    st.session_state.messages[user_id].append({"role": "user", "content": prompt})
+    messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # Use RAG if context is available, else only AI
     if retriever:
-        retrieval_chain = ConversationalRetrievalChain.from_llm(
-            llm=llm, retriever=retriever, memory=st.session_state.memory[user_id]
-        )
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        retrieval_chain = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever, memory=memory)
 
         def process_input(input_text):
-            return retrieval_chain.invoke({"question": input_text})
+            return retrieval_chain.invoke(input_text)
 
         rag_pipeline = RunnableLambda(process_input)
 
+        response_text = ""
         with st.chat_message("assistant"):
             response_container = st.empty()
-            response_text = ""
 
             for chunk in rag_pipeline.stream(prompt):
-                response_chunk = chunk.get("answer", "")
-                response_text += response_chunk
-                response_container.markdown(response_text)
+                if isinstance(chunk, str):
+                    response_text += chunk
+                elif hasattr(chunk, "text"):
+                    response_text += chunk.text
+                elif hasattr(chunk, "content"):
+                    response_text += chunk.content
+        
+            response_container.markdown(response_text)
+
     else:
         response = llm.invoke(prompt)
         response_text = response.content if response else "I couldn't generate a response."
@@ -186,11 +124,26 @@ if prompt := st.chat_input("Ask me anything..."):
         with st.chat_message("assistant"):
             st.markdown(response_text)
 
-    st.session_state.messages[user_id].append({"role": "assistant", "content": response_text})
+    # Store assistant response
+    messages.append({"role": "assistant", "content": response_text})
 
-# ------------------ 🗑 Clear Chat History ------------------
-if st.sidebar.button("🗑 Clear Chat History"):
-    st.session_state.messages[user_id] = []
-    st.session_state.memory[user_id].clear()
-    st.sidebar.success("Chat history cleared!")
-    st.rerun()
+    # Generate voice response
+    tts = gTTS(response_text)
+    tts.save("response.mp3")
+    st.audio("response.mp3")
+
+# Chat History Export
+if st.sidebar.button("📄 Download Chat as PDF"):
+    chat_history = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
+    pdfkit.from_string(chat_history, "chat.pdf")
+    with open("chat.pdf", "rb") as file:
+        st.sidebar.download_button("Download PDF", file, file_name="chat_history.pdf")
+
+# Admin Dashboard (Analytics)
+st.sidebar.header("📊 Chatbot Analytics")
+st.sidebar.metric("Total Chats", str(len(messages)))
+st.sidebar.metric("Unique Users", "1")  # Replace with dynamic user tracking
+
+fig, ax = plt.subplots()
+ax.bar(["Positive", "Neutral", "Negative"], [60, 30, 10])  # Fake data
+st.sidebar.pyplot(fig)
