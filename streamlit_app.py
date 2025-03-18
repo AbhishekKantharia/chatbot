@@ -14,18 +14,21 @@ st.title("🤖 Smart AI Chatbot (Google Gemini + RLHF)")
 conn = sqlite3.connect("chatbot.db", check_same_thread=False)
 cursor = conn.cursor()
 
-# Ensure the chat_history table exists with the necessary columns
-cursor.execute("""
-    CREATE TABLE IF NOT EXISTS chat_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        timestamp DATETIME,
-        user_input TEXT,
-        bot_response TEXT,
-        feedback INTEGER DEFAULT NULL  -- Ensure the feedback column exists
-    )
-""")
-conn.commit()
+# Check if the 'feedback' column exists in the table
+cursor.execute("PRAGMA table_info(chat_history)")
+columns = [column[1] for column in cursor.fetchall()]
+
+# If 'feedback' column is missing, add it
+if "feedback" not in columns:
+    cursor.execute("ALTER TABLE chat_history ADD COLUMN feedback INTEGER DEFAULT NULL")
+    conn.commit()  # Commit changes
+
+# Ensure the 'feedback' column is now available
+cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 1")
+positive_feedback_count = cursor.fetchone()[0]
+
+cursor.execute("SELECT COUNT(*) FROM chat_history WHERE feedback = 0")
+negative_feedback_count = cursor.fetchone()[0]
 
 # ========================= CHATBOT MEMORY =========================
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
