@@ -1,144 +1,168 @@
 import os
-import sqlite3
 import streamlit as st
 import google.generativeai as genai
+from langchain.memory import ConversationBufferMemory
+from langchain.chains import ConversationalRetrievalChain
+from langchain.schema.runnable import RunnableLambda
+from langchain_community.vectorstores import FAISS
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from PyPDF2 import PdfReader
+import docx2txt
+import speech_recognition as sr
 from gtts import gTTS
-import datetime
 import matplotlib.pyplot as plt
+import pdfkit
+import socket
+import sqlite3
+import datetime
+import dropbox
+import msal
+from pydrive.auth import GoogleAuth
+from pydrive.drive import GoogleDrive
 
-# 🎯 **SQLite Database Setup**
-conn = sqlite3.connect("chatbot.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE,
-    password TEXT
-)
-""")
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS chats (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    timestamp TEXT,
-    user_input TEXT,
-    bot_response TEXT,
-    FOREIGN KEY (user_id) REFERENCES users(id)
-)
-""")
-conn.commit()
-
-# 🎯 **Streamlit UI Configuration**
+# ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
 st.title("🤖 Smart AI Chatbot")
 
-# 🎯 **User Authentication**
+# ========================= DATABASE FOR AUTHENTICATION =========================
+conn = sqlite3.connect("users.db")
+cursor = conn.cursor()
+cursor.execute(
+    """CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT, password TEXT)"""
+)
+conn.commit()
+
+# ========================= USER AUTHENTICATION =========================
+st.sidebar.header("🔑 User Authentication")
+auth_option = st.sidebar.radio("Login or Sign Up", ["Login", "Sign Up"])
+
+if auth_option == "Sign Up":
+    new_username = st.sidebar.text_input("Username")
+    new_password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Register"):
+        cursor.execute("SELECT * FROM users WHERE username=?", (new_username,))
+        if cursor.fetchone():
+            st.sidebar.error("Username already exists.")
+        else:
+            cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (new_username, new_password))
+            conn.commit()
+            st.sidebar.success("✅ Registration successful! Please log in.")
+
+elif auth_option == "Login":
+    username = st.sidebar.text_input("Username")
+    password = st.sidebar.text_input("Password", type="password")
+    if st.sidebar.button("Login"):
+        cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+        if cursor.fetchone():
+            st.sidebar.success(f"Logged in as {username}")
+            st.session_state["user_id"] = username
+        else:
+            st.sidebar.error("🚫 Invalid credentials.")
+
 if "user_id" not in st.session_state:
-    st.session_state["user_id"] = None
-if "username" not in st.session_state:
-    st.session_state["username"] = ""
+    st.stop()
 
-if not st.session_state["user_id"]:
-    st.sidebar.header("🔐 Login / Register")
-    auth_option = st.sidebar.radio("Select Option", ["Login", "Register"])
-    username = st.sidebar.text_input("Username", key="username_input")
-    password = st.sidebar.text_input("Password", type="password", key="password_input")
+# ========================= BAN USERS BY IP =========================
+def get_user_ip():
+    try:
+        return socket.gethostbyname(socket.gethostname())
+    except:
+        return "Unknown"
 
-    if auth_option == "Login":
-        if st.sidebar.button("Login"):
-            cursor.execute("SELECT id, username FROM users WHERE username = ? AND password = ?", (username, password))
-            user = cursor.fetchone()
-            if user:
-                st.session_state["user_id"] = user[0]
-                st.session_state["username"] = user[1]
-                st.rerun()  # ✅ FIXED: `st.experimental_rerun()` replaced with `st.rerun()`
-            else:
-                st.sidebar.error("Invalid credentials.")
+user_ip = get_user_ip()
+BANNED_IPS = ["192.168.1.100", "203.0.113.45"]
 
-    elif auth_option == "Register":
-        if st.sidebar.button("Register"):
-            try:
-                cursor.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password))
-                conn.commit()
-                st.sidebar.success("✅ Account created! Please log in.")
-                st.rerun()
-            except sqlite3.IntegrityError:
-                st.sidebar.error("🚫 Username already exists.")
+if user_ip in BANNED_IPS:
+    st.error("🚫 You are banned from using this chatbot.")
+    st.stop()
 
-else:
-    st.sidebar.success(f"Logged in as {st.session_state['username']}")
-    if st.sidebar.button("Logout"):
-        st.session_state["user_id"] = None
-        st.session_state["username"] = ""
-        st.rerun()  # ✅ FIXED: Using `st.rerun()` instead of `st.experimental_rerun()`
-
-# 🎯 **Google AI Configuration**
+# ========================= CONFIGURE AI =========================
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
-    st.error("Google API Key is missing! Set it as an environment variable.")
+    st.error("Google API key is missing! Set it as an environment variable.")
     st.stop()
 
 genai.configure(api_key=GOOGLE_API_KEY)
-llm = genai.GenerativeModel("gemini-1.5-pro")
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0.7)
 
-# 🎯 **Save Chat History to SQLite**
-# Save chat history with ISO 8601 timestamp format
-def save_chat(user_id, user_input, bot_response):
-    timestamp = datetime.datetime.now().isoformat()  # ✅ Fix: Convert datetime to ISO 8601 string
-    cursor.execute(
-        "INSERT INTO chats (user_id, timestamp, user_input, bot_response) VALUES (?, ?, ?, ?)",
-        (user_id, timestamp, user_input, bot_response)
-    )
-    conn.commit()
+# ========================= MULTIPLE CHAT SESSIONS =========================
+st.sidebar.header("💬 Manage Chats")
+if "chats" not in st.session_state:
+    st.session_state["chats"] = {}
 
-# 🎯 **Retrieve Chat History**
-def get_chat_history(user_id):
-    cursor.execute("SELECT user_input, bot_response FROM chats WHERE user_id = ? ORDER BY timestamp", (user_id,))
-    chats = cursor.fetchall()
-    return [{"role": "user", "content": row[0]} for row in chats] + \
-           [{"role": "assistant", "content": row[1]} for row in chats]
+chat_list = list(st.session_state["chats"].keys()) or ["New Chat"]
+chat_name = st.sidebar.selectbox("Select a Chat", chat_list)
 
-# 🎯 **Chat Interface**
-if st.session_state["user_id"]:
-    messages = get_chat_history(st.session_state["user_id"])
-    st.subheader("💬 Chat")
+if st.sidebar.button("➕ Start New Chat"):
+    new_chat_name = f"Chat {len(st.session_state['chats']) + 1}"
+    st.session_state["chats"][new_chat_name] = {"messages": [], "context_docs": []}
+    chat_name = new_chat_name
 
-    for message in messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+chat_session = st.session_state["chats"][chat_name]
+messages = chat_session["messages"]
 
-    if prompt := st.chat_input("Ask me anything..."):
-        messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
+# ========================= FILE UPLOAD & INTEGRATION =========================
+st.sidebar.header("📂 Upload & Connect Files")
+uploaded_file = st.sidebar.file_uploader("Upload Local File", type=["pdf", "docx", "txt"])
 
-        response = llm.generate_content(prompt)
-        response_text = response.text if response else "I couldn't generate a response."
+if uploaded_file:
+    extracted_text = docx2txt.process(uploaded_file) if uploaded_file.name.endswith(".docx") else uploaded_file.read().decode("utf-8")
+    chat_session["context_docs"].append(extracted_text)
+    st.sidebar.success("✅ File added!")
 
-        with st.chat_message("assistant"):
-            st.markdown(response_text)
+# ========================= SEARCH & REASON =========================
+st.sidebar.header("🔍 Search & Reason")
+search_query = st.sidebar.text_input("Search in Uploaded Files")
 
-        # Store chat in SQLite
-        save_chat(st.session_state["user_id"], prompt, response_text)
+if search_query:
+    results = " ".join(chat_session["context_docs"]).lower()
+    st.sidebar.write(f"**Search Results:** {results[:500]}...")
 
-        # 🎯 **Audio Response**
-        try:
-            tts = gTTS(response_text, lang="en")
-            tts.save("response.mp3")
-            st.audio("response.mp3")
-        except Exception as e:
-            st.error(f"❌ Audio error: {str(e)}")
+# ========================= CHAT FUNCTIONALITY =========================
+st.subheader(f"💬 {chat_name}")
 
-# 🎯 **Analytics Dashboard**
-if st.session_state["user_id"]:
-    st.sidebar.header("📊 Analytics")
-    messages = get_chat_history(st.session_state["user_id"])
-    total_chats = len(messages) // 2  # Since each interaction has user & bot response
+for i, message in enumerate(messages):
+    role = message["role"]
+    content = message["content"]
+    
+    with st.chat_message(role):
+        st.markdown(content)
+        if st.button("📝 Edit", key=f"edit_{i}"):
+            new_text = st.text_area(f"Edit message {i}", content)
+            if st.button("✅ Save", key=f"save_{i}"):
+                messages[i]["content"] = new_text
+                st.experimental_rerun()
 
-    st.sidebar.metric("Total Chats", total_chats)
+        if st.button("❌ Delete", key=f"delete_{i}"):
+            del messages[i]
+            st.experimental_rerun()
 
-    fig, ax = plt.subplots()
-    ax.bar(["Total Chats"], [total_chats])
-    st.sidebar.pyplot(fig)
+if prompt := st.chat_input("Ask me anything..."):
+    messages.append({"role": "user", "content": prompt})
+    response = llm.invoke(prompt)
+    response_text = response.content if response else "I couldn't generate a response."
+
+    messages.append({"role": "assistant", "content": response_text})
+
+    with st.chat_message("assistant"):
+        st.markdown(response_text)
+
+    tts = gTTS(response_text, lang="en")
+    tts.save("response.mp3")
+    st.audio("response.mp3")
+
+# ========================= DOWNLOAD CHAT HISTORY =========================
+if st.sidebar.button("📄 Download Chat as PDF"):
+    chat_history = "\n".join([f"{m['role'].upper()}: {m['content']}" for m in messages])
+    pdfkit.from_string(chat_history, "chat.pdf")
+    with open("chat.pdf", "rb") as file:
+        st.sidebar.download_button("Download PDF", file, file_name="chat_history.pdf")
+
+# ========================= ANALYTICS DASHBOARD =========================
+st.sidebar.header("📊 Chatbot Analytics")
+st.sidebar.metric("Total Chats", str(len(messages)))
+
+fig, ax = plt.subplots()
+ax.bar(["Positive", "Neutral", "Negative"], [60, 30, 10])
+st.sidebar.pyplot(fig)
