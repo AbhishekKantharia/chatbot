@@ -16,33 +16,21 @@ import dropbox
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
 import requests
-import msal
-print("MSAL is installed successfully!")
+from requests_oauthlib import OAuth2Session
 
-# Microsoft App Credentials
-CLIENT_ID = "your-client-id"
-CLIENT_SECRET = "your-client-secret"
-AUTHORITY = "https://login.microsoftonline.com/common"
-SCOPES = ["https://graph.microsoft.com/.default"]
+CLIENT_ID = "YOUR_CLIENT_ID"
+CLIENT_SECRET = "YOUR_CLIENT_SECRET"
+TOKEN_URL = "https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token"
 
-# Authenticate with MSAL
-app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
-token_response = app.acquire_token_for_client(SCOPES)
+oauth = OAuth2Session(CLIENT_ID)
+token = oauth.fetch_token(
+    TOKEN_URL,
+    client_id=CLIENT_ID,
+    client_secret=CLIENT_SECRET,
+    scope=["https://graph.microsoft.com/.default"],
+)
 
-if "access_token" in token_response:
-    access_token = token_response["access_token"]
-    headers = {"Authorization": f"Bearer {access_token}"}
-    
-    # List OneDrive files
-    drive_url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
-    response = requests.get(drive_url, headers=headers)
-    
-    if response.status_code == 200:
-        print("OneDrive Files:", response.json())
-    else:
-        print("Error:", response.json())
-else:
-    print("Authentication Failed:", token_response)
+print("Access Token:", token["access_token"])
 
 # Configure Streamlit
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
