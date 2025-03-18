@@ -1,7 +1,6 @@
 import os
 import streamlit as st
 import google.generativeai as genai
-import openai
 import requests
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
@@ -17,26 +16,12 @@ import socket
 
 # ======================== CONFIGURE STREAMLIT ========================
 st.set_page_config(page_title="AI Chatbot", page_icon="🤖", layout="wide")
-st.title("🤖 Smart AI Chatbot")
+st.title("🤖 Smart AI Chatbot (Google Gemini)")
 
 # Fetch Google API key
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     st.error("Google API key is missing! Set it as an environment variable.")
-    st.stop()
-
-# Get user IP address for banning feature
-def get_user_ip():
-    try:
-        return socket.gethostbyname(socket.gethostname())
-    except:
-        return "Unknown"
-
-user_ip = get_user_ip()
-BANNED_IPS = ["192.168.1.100", "203.0.113.45"]
-
-if user_ip in BANNED_IPS:
-    st.error("🚫 You have been banned from using this chatbot.")
     st.stop()
 
 # Configure Google Gemini AI
@@ -128,10 +113,11 @@ if prompt:
     tts.save("response.mp3")
     st.audio("response.mp3")
 
-# ======================== AI IMAGE GENERATION ========================
+# ======================== AI IMAGE GENERATION (Google Gemini Vision) ========================
 def generate_image(prompt):
-    response = openai.Image.create(prompt=prompt, n=1, size="1024x1024")
-    st.image(response['data'][0]['url'])
+    response = genai.generate_content(model="gemini-1.5-vision", contents=prompt)
+    image_url = response["candidates"][0]["content"]["parts"][0]["text"]
+    st.image(image_url)
 
 if st.sidebar.button("🎨 Generate AI Art"):
     generate_image(prompt)
