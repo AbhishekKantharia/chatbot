@@ -114,10 +114,21 @@ if prompt := st.chat_input("Ask me anything..."):
     # Store assistant response
     messages.append({"role": "assistant", "content": response_text})
 
-    # Generate voice response
-    tts = gTTS(response_text)
-    tts.save("response.mp3")
-    st.audio("response.mp3")
+import re
+
+# Clean response text
+def clean_text_for_tts(text):
+    """Remove special characters and fix formatting for better TTS pronunciation."""
+    text = re.sub(r"[*_~`]", "", text)  # Remove Markdown characters
+    text = re.sub(r"\n+", ". ", text)   # Replace new lines with pauses
+    return text.strip()
+
+# Generate high-quality TTS response
+cleaned_text = clean_text_for_tts(response_text)
+
+tts = gTTS(cleaned_text, lang="en", slow=False)  # Slow=False for natural speed
+tts.save("response.mp3")
+st.audio("response.mp3")
 
 # Chat History Export
 if st.sidebar.button("📄 Download Chat as PDF"):
