@@ -15,7 +15,33 @@ import datetime
 import dropbox
 from pydrive2.auth import GoogleAuth
 from pydrive2.drive import GoogleDrive
-from onedrivesdk import OneDriveClient
+import msal
+import requests
+
+# Microsoft App Credentials
+CLIENT_ID = "your-client-id"
+CLIENT_SECRET = "your-client-secret"
+AUTHORITY = "https://login.microsoftonline.com/common"
+SCOPES = ["https://graph.microsoft.com/.default"]
+
+# Authenticate with MSAL
+app = msal.ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
+token_response = app.acquire_token_for_client(SCOPES)
+
+if "access_token" in token_response:
+    access_token = token_response["access_token"]
+    headers = {"Authorization": f"Bearer {access_token}"}
+    
+    # List OneDrive files
+    drive_url = "https://graph.microsoft.com/v1.0/me/drive/root/children"
+    response = requests.get(drive_url, headers=headers)
+    
+    if response.status_code == 200:
+        print("OneDrive Files:", response.json())
+    else:
+        print("Error:", response.json())
+else:
+    print("Authentication Failed:", token_response)
 
 # Configure Streamlit
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
