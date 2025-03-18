@@ -167,4 +167,4 @@ if prompt := st.chat_input("Ask me anything..."):
 # Delete chat
 if st.sidebar.button("🗑️ Delete Chat"):
     del st.session_state["chats"][chat_name]
-    st.experimental_rerun()
+    st.rerun()
