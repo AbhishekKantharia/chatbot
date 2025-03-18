@@ -4,8 +4,10 @@ import datetime
 import os
 from langchain.memory import ConversationBufferMemory
 from langchain.chains import ConversationalRetrievalChain
-from langchain_community.vectorstores import FAISS
+from langchain.chains import LLMChain
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain.prompts import PromptTemplate
+from langchain_community.vectorstores import FAISS
 
 # ========================= STREAMLIT CONFIG =========================
 st.set_page_config(page_title="Smart AI Chatbot", page_icon="🤖", layout="wide")
@@ -34,6 +36,8 @@ memory = ConversationBufferMemory(memory_key="chat_history")
 
 # ✅ Check if FAISS index exists before loading
 faiss_index_path = "faiss_index"
+retriever = None  # Default to None
+
 if os.path.exists(f"{faiss_index_path}/index.faiss") and os.path.exists(f"{faiss_index_path}/index.pkl"):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     retriever = FAISS.load_local(
@@ -43,23 +47,31 @@ if os.path.exists(f"{faiss_index_path}/index.faiss") and os.path.exists(f"{faiss
     ).as_retriever()
 else:
     st.warning("⚠️ FAISS index not found. Running without retrieval augmentation.")
-    retriever = None  # Allow chatbot to function without FAISS
 
 # ========================= AI CHAT FUNCTION =========================
 def chat_response(user_input, dynamic_prompt=None):
     """
     Generates a chatbot response using Google Gemini AI.
-    Includes RLHF-based fine-tuning by adjusting prompts.
+    Falls back to LLMChain if no retriever is available.
     """
     if dynamic_prompt:
         user_input = dynamic_prompt + "\n" + user_input
-    
-    # ✅ Only use retriever if available
-    chain_args = {"llm": llm, "memory": memory}
-    if retriever:
-        chain_args["retriever"] = retriever  # Only include if available
 
-    chain = ConversationalRetrievalChain.from_llm(**chain_args)
+    if retriever:
+        # ✅ Use ConversationalRetrievalChain if retriever exists
+        chain = ConversationalRetrievalChain.from_llm(
+            llm=llm,
+            retriever=retriever,
+            memory=memory
+        )
+    else:
+        # ✅ Use basic LLMChain if FAISS is missing
+        prompt_template = PromptTemplate(
+            input_variables=["question"],
+            template="You are an AI assistant. Answer this question: {question}"
+        )
+        chain = LLMChain(llm=llm, prompt=prompt_template)
+
     return chain.run(user_input)
 
 # ========================= DISPLAY CHAT HISTORY =========================
